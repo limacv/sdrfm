@@ -1,0 +1,6 @@
+*.png
+*.jpg
+*.mp4
+*.pyc
+.vscode
+examples
