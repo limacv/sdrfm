@@ -74,9 +74,14 @@ class ToTensor(object):
 class HyperSim(Dataset):
     def __init__(self, data_dir_root):
         # image paths are of the form <data_dir_root>/<scene>/images/scene_cam_#_final_preview/*.tonemap.jpg
-        # depth paths are of the form <data_dir_root>/<scene>/images/scene_cam_#_final_preview/*.depth_meters.hdf5
+        # depth paths are of the form <data_dir_root>/<scene>/images/scene_cam_#_geometry_hdf5/*.depth_meters.hdf5
+        # self.image_files = glob.glob(os.path.join(
+        #     data_dir_root, '*', 'images', 'scene_cam_*_final_preview', '*.tonemap.jpg'))
+        # self.depth_files = [r.replace("_final_preview", "_geometry_hdf5").replace(
+        #     ".tonemap.jpg", ".depth_meters.hdf5") for r in self.image_files]
+        
         self.image_files = glob.glob(os.path.join(
-            data_dir_root, '*', 'images', 'scene_cam_*_final_preview', '*.tonemap.jpg'))
+            data_dir_root, 'ai_001_00*', 'images', 'scene_cam_*_final_preview', '*.tonemap.jpg'))
         self.depth_files = [r.replace("_final_preview", "_geometry_hdf5").replace(
             ".tonemap.jpg", ".depth_meters.hdf5") for r in self.image_files]
         self.transform = ToTensor()
@@ -114,13 +119,18 @@ def get_hypersim_loader(data_dir_root, batch_size=1, **kwargs):
     return DataLoader(dataset, batch_size, **kwargs)
 
 if __name__ == "__main__":
+    # depth nan question: https://github.com/apple/ml-hypersim/issues/13
+    # not all pixels contain actual scene geometry, e.g., background pixels
+    # In most learning applications, masking them out and ignoring them \
+        # when computing a per-pixel loss seems like a sensible approach.
     loader = get_hypersim_loader(
-        data_dir_root="data/VKITTI2")
+        data_dir_root="data/Hypersim")
     print("Total files", len(loader.dataset))
     for i, sample in enumerate(loader):
         print(sample["image"].shape)
         print(sample["depth"].shape)
-        print(sample["dataset"])
+        # print(sample["dataset"])
         print(sample['depth'].min(), sample['depth'].max())
+        # import pdb;pdb.set_trace()
         if i > 5:
             break
