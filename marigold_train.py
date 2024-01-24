@@ -41,15 +41,13 @@ from transformers import CLIPTextModel, CLIPTokenizer
 from transformers.utils import ContextManagers
 
 import diffusers
-from diffusers import AutoencoderKL, DDPMScheduler, StableDiffusionPipeline, UNet2DConditionModel
+from marigold_pipeline import MarigoldPipeline
+from diffusers import AutoencoderKL, DDPMScheduler, UNet2DConditionModel
 from diffusers.optimization import get_scheduler
 from diffusers.training_utils import EMAModel, compute_snr
-from diffusers.utils import check_min_version, deprecate, is_wandb_available, make_image_grid
+from diffusers.utils import check_min_version, deprecate, is_wandb_available, make_image_grid, load_image
 from diffusers.utils.import_utils import is_xformers_available
-
-
-if is_wandb_available():
-    import wandb
+import torch
 
 
 # Will error if the minimal version of diffusers is not installed. Remove at your own risks.
@@ -62,85 +60,10 @@ DATASET_NAME_MAPPING = {
 }
 
 
-def save_model_card(
-    args,
-    repo_id: str,
-    images=None,
-    repo_folder=None,
-):
-    img_str = ""
-    if len(images) > 0:
-        image_grid = make_image_grid(images, 1, len(args.validation_prompts))
-        image_grid.save(os.path.join(repo_folder, "val_imgs_grid.png"))
-        img_str += "![val_imgs_grid](./val_imgs_grid.png)\n"
-
-    yaml = f"""
----
-license: creativeml-openrail-m
-base_model: {args.pretrained_model_name_or_path}
-datasets:
-- {args.dataset_name}
-tags:
-- stable-diffusion
-- stable-diffusion-diffusers
-- text-to-image
-- diffusers
-inference: true
----
-    """
-    model_card = f"""
-# Text-to-image finetuning - {repo_id}
-
-This pipeline was finetuned from **{args.pretrained_model_name_or_path}** on the **{args.dataset_name}** dataset. Below are some example images generated with the finetuned pipeline using the following prompts: {args.validation_prompts}: \n
-{img_str}
-
-## Pipeline usage
-
-You can use the pipeline like so:
-
-```python
-from diffusers import DiffusionPipeline
-import torch
-
-pipeline = DiffusionPipeline.from_pretrained("{repo_id}", torch_dtype=torch.float16)
-prompt = "{args.validation_prompts[0]}"
-image = pipeline(prompt).images[0]
-image.save("my_image.png")
-```
-
-## Training info
-
-These are the key hyperparameters used during training:
-
-* Epochs: {args.num_train_epochs}
-* Learning rate: {args.learning_rate}
-* Batch size: {args.train_batch_size}
-* Gradient accumulation steps: {args.gradient_accumulation_steps}
-* Image resolution: {args.resolution}
-* Mixed-precision: {args.mixed_precision}
-
-"""
-    wandb_info = ""
-    if is_wandb_available():
-        wandb_run_url = None
-        if wandb.run is not None:
-            wandb_run_url = wandb.run.url
-
-    if wandb_run_url is not None:
-        wandb_info = f"""
-More information on all the CLI arguments and the environment are available on your [`wandb` run page]({wandb_run_url}).
-"""
-
-    model_card += wandb_info
-
-    with open(os.path.join(repo_folder, "README.md"), "w") as f:
-        f.write(yaml + model_card)
-
-
 def log_validation(vae, text_encoder, tokenizer, unet, args, accelerator, weight_dtype, epoch):
     logger.info("Running validation... ")
 
-    pipeline = StableDiffusionPipeline.from_pretrained(
+    pipeline = MarigoldPipeline.from_pretrained(
         args.pretrained_model_name_or_path,
         vae=accelerator.unwrap_model(vae),
         text_encoder=accelerator.unwrap_model(text_encoder),
@@ -157,23 +80,34 @@ def log_validation(vae, text_encoder, tokenizer, unet, args, accelerator, weight
     if args.enable_xformers_memory_efficient_attention:
         pipeline.enable_xformers_memory_efficient_attention()
 
-    if args.seed is None:
-        generator = None
-    else:
-        generator = torch.Generator(device=accelerator.device).manual_seed(args.seed)
-
+    # TODO: better way to load validation data, and also do metric computation & logging
+    eval_image_names = os.listdir(args.val_data_dir)
     images = []
-    for i in range(len(args.validation_prompts)):
+    for eval_img_name in eval_image_names:
+        eval_img = load_image(os.path.join(args.val_data_dir, eval_img_name))
         with torch.autocast("cuda"):
-            image = pipeline(args.validation_prompts[i], num_inference_steps=20, generator=generator).images[0]
+            res = pipeline(eval_img, 
+                           denoising_steps=args.val_denoising_steps, 
+                           ensemble_size=args.val_ensemble_size)
+            depth = res.depth_np
+            depth_color = res.depth_colored
 
-        images.append(image)
+        images.append(depth_color)
 
+    # save image
+    for img_name, result in zip(eval_image_names, images):
+        os.makedirs(os.path.join(accelerator.logging_dir, f"out_ep{epoch:04d}"), exist_ok=True)
+        result.save(os.path.join(accelerator.logging_dir, f"out_ep{epoch:04d}", img_name))
+    # save log
     for tracker in accelerator.trackers:
         if tracker.name == "tensorboard":
-            np_images = np.stack([np.asarray(img) for img in images])
-            tracker.writer.add_images("validation", np_images, epoch, dataformats="NHWC")
+            # TODO: evaluate and save metric
+            pass
+            # Tdon't save in tensorboard, instead save as image file, which allows for faster tb loading
+            # np_images = np.stack([np.asarray(img) for img in images])
+            # tracker.writer.add_images("validation", np_images, epoch, dataformats="NHWC")
         elif tracker.name == "wandb":
+            import wandb
             tracker.log(
                 {
                     "validation": [
@@ -182,6 +116,7 @@ def log_validation(vae, text_encoder, tokenizer, unet, args, accelerator, weight
                     ]
                 }
             )
+        
         else:
             logger.warn(f"image logging not implemented for {tracker.name}")
 
@@ -192,7 +127,7 @@ def log_validation(vae, text_encoder, tokenizer, unet, args, accelerator, weight
 
 
 def parse_args():
-    parser = argparse.ArgumentParser(description="Simple example of a training script.")
+    parser = argparse.ArgumentParser(description="Train Marigold.")
     parser.add_argument(
         "--input_perturbation", type=float, default=0, help="The scale of input perturbation. Recommended 0.1."
     )
@@ -261,12 +196,13 @@ def parse_args():
         ),
     )
     parser.add_argument(
-        "--validation_prompts",
+        "--val_data_dir",
         type=str,
         default=None,
-        nargs="+",
-        help=("A set of prompts evaluated every `--validation_epochs` and logged to `--report_to`."),
+        help=("dataset path"),
     )
+    parser.add_argument("--val_denoising_steps", type=int, default=50, help="The number of denosing step for validation.")
+    parser.add_argument("--val_ensemble_size", type=int, default=10, help="The number of ensemble for validation.")
     parser.add_argument(
         "--output_dir",
         type=str,
@@ -437,7 +373,7 @@ def parse_args():
     parser.add_argument(
         "--checkpointing_steps",
         type=int,
-        default=500,
+        default=1000,
         help=(
             "Save a checkpoint of the training state every X updates. These checkpoints are only suitable for resuming"
             " training using `--resume_from_checkpoint`."
@@ -471,12 +407,20 @@ def parse_args():
     parser.add_argument(
         "--tracker_project_name",
         type=str,
-        default="text2image-fine-tune",
+        default="sd2_finetuned",
         help=(
             "The `project_name` argument passed to Accelerator.init_trackers for"
             " more information see https://huggingface.co/docs/accelerate/v0.17.0/en/package_reference/accelerator#accelerate.Accelerator"
         ),
     )
+    parser.add_argument(
+        "--vae_deterministic",
+        action="store_true",
+        help=(
+            "Whether to directly use mean as the latent space"
+        ),
+    )
+    parser.add_argument("--noise_discount", type=float, default=0.9, help="The discount of multi-resolution noise.")
 
     args = parser.parse_args()
     env_local_rank = int(os.environ.get("LOCAL_RANK", -1))
@@ -546,7 +490,7 @@ def main():
             repo_id = create_repo(
                 repo_id=args.hub_model_id or Path(args.output_dir).name, exist_ok=True, token=args.hub_token
             ).repo_id
-
+    
     # Load scheduler, tokenizer and models.
     noise_scheduler = DDPMScheduler.from_pretrained(args.pretrained_model_name_or_path, subfolder="scheduler")
     tokenizer = CLIPTokenizer.from_pretrained(
@@ -589,11 +533,24 @@ def main():
     text_encoder.requires_grad_(False)
     unet.train()
 
+    def _double_input_channel(_unet):    # Sec. 3.2: Adapted denoising U-Net
+        conv_old = _unet.conv_in
+        new_conv = torch.nn.Conv2d(8, conv_old.out_channels, conv_old.kernel_size, conv_old.stride, conv_old.padding, conv_old.dilation, conv_old.groups)
+        new_conv.weight.data == conv_old.weight.data.repeat(1, 2, 1, 1) / 2.
+        new_conv.bias.data == conv_old.bias.data
+        _unet.conv_in = new_conv
+        _unet.config.in_channels = 8
+    
+    if unet.conv_in.in_channels == 4:  # original unet
+        _double_input_channel(unet)
+
     # Create EMA for the unet.
     if args.use_ema:
         ema_unet = UNet2DConditionModel.from_pretrained(
             args.pretrained_model_name_or_path, subfolder="unet", revision=args.revision, variant=args.variant
         )
+        if ema_unet.conv_in.in_channels == 4:
+            _double_input_channel(ema_unet)
         ema_unet = EMAModel(ema_unet.parameters(), model_cls=UNet2DConditionModel, model_config=ema_unet.config)
 
     if args.enable_xformers_memory_efficient_attention:
@@ -726,24 +683,17 @@ def main():
                 f"--caption_column' value '{args.caption_column}' needs to be one of: {', '.join(column_names)}"
             )
 
-    # Preprocessing the datasets.
-    # We need to tokenize input captions and transform the images.
-    def tokenize_captions(examples, is_train=True):
-        captions = []
-        for caption in examples[caption_column]:
-            if isinstance(caption, str):
-                captions.append(caption)
-            elif isinstance(caption, (list, np.ndarray)):
-                # take a random caption if there are multiple
-                captions.append(random.choice(caption) if is_train else caption[0])
-            else:
-                raise ValueError(
-                    f"Caption column `{caption_column}` should contain either strings or lists of strings."
-                )
-        inputs = tokenizer(
-            captions, max_length=tokenizer.model_max_length, padding="max_length", truncation=True, return_tensors="pt"
-        )
-        return inputs.input_ids
+    # _encode_empty_text
+    prompt = ""
+    text_inputs = tokenizer(
+        prompt,
+        padding="do_not_pad",
+        max_length=tokenizer.model_max_length,
+        truncation=True,
+        return_tensors="pt",
+    )
+    text_input_ids = text_inputs.input_ids.to(text_encoder.device)
+    empty_text_embed = text_encoder(text_input_ids)[0].to(text_encoder.dtype)
 
     # Preprocessing the datasets.
     train_transforms = transforms.Compose(
@@ -756,10 +706,12 @@ def main():
         ]
     )
 
+    # TODO: read rgb and depth
+    # TODO: normalize the depth maps
     def preprocess_train(examples):
         images = [image.convert("RGB") for image in examples[image_column]]
-        examples["pixel_values"] = [train_transforms(image) for image in images]
-        examples["input_ids"] = tokenize_captions(examples)
+        examples["images"] = [train_transforms(image) for image in images]
+        examples["depth"] = [torch.flip(image[:1].repeat((3, 1, 1)), dims=[-1,]) for image in examples["images"]]
         return examples
 
     with accelerator.main_process_first():
@@ -769,10 +721,11 @@ def main():
         train_dataset = dataset["train"].with_transform(preprocess_train)
 
     def collate_fn(examples):
-        pixel_values = torch.stack([example["pixel_values"] for example in examples])
-        pixel_values = pixel_values.to(memory_format=torch.contiguous_format).float()
-        input_ids = torch.stack([example["input_ids"] for example in examples])
-        return {"pixel_values": pixel_values, "input_ids": input_ids}
+        images = torch.stack([example["images"] for example in examples])
+        depths = torch.stack([example["images"] for example in examples])
+        images = images.to(memory_format=torch.contiguous_format).float()
+        depths = depths.to(memory_format=torch.contiguous_format).float()
+        return {"images": images, "depths": depths}
 
     # DataLoaders creation:
     train_dataloader = torch.utils.data.DataLoader(
@@ -830,7 +783,6 @@ def main():
     # The trackers initializes automatically on the main process.
     if accelerator.is_main_process:
         tracker_config = dict(vars(args))
-        tracker_config.pop("validation_prompts")
         accelerator.init_trackers(args.tracker_project_name, tracker_config)
 
     # Train!
@@ -887,32 +839,61 @@ def main():
         for step, batch in enumerate(train_dataloader):
             with accelerator.accumulate(unet):
                 # Convert images to latent space
-                latents = vae.encode(batch["pixel_values"].to(weight_dtype)).latent_dist.sample()
-                latents = latents * vae.config.scaling_factor
+                rgb = batch["images"]
+                depth = batch["depths"]
+                # Sample a random timestep for each image
+                bsz = rgb.shape[0]
+                timesteps = torch.randint(0, noise_scheduler.config.num_train_timesteps, (bsz,), device=depth.device)
+                timesteps = timesteps.long()
 
-                # Sample noise that we'll add to the latents
-                noise = torch.randn_like(latents)
+                def _vae_encode_fn(_inp):
+                    if not args.vae_deterministic:
+                        _latents = vae.encode(_inp.to(weight_dtype)).latent_dist.sample()
+                    else:
+                        # TODO try to deterministically encode input
+                        raise NotImplementedError("to be implemented")
+                    _latents = _latents * vae.config.scaling_factor
+                    return _latents
+                
+                latents_rgb = _vae_encode_fn(rgb)
+                latents_depth = _vae_encode_fn(depth)
+                
+                def _pyramid_noise_like(x, discount=0.9):
+                    b, c, w, h = x.shape
+                    u = torch.nn.Upsample(size=(w, h), mode='bilinear')
+                    noise = torch.randn_like(x)
+                    for i in range(6):
+                        r = random.random()*2+2 # Rather than always going 2x, 
+                        w, h = max(1, int(w/(r**i))), max(1, int(h/(r**i)))
+                        noise += u(torch.randn(b, c, w, h).to(x)) * discount**i
+                        if w==1 or h==1: break 
+                    return noise / noise.std() # Scale back to unit variance
+
+                # Sec 3.3: The proposed annealed schedule interpolates 
+                #   between the multi-resolution noise at t = T and standard Gaussian noise at t = 0
+                noise_multires = _pyramid_noise_like(latents_depth, args.noise_discount)
+                noise_standard = torch.randn_like(latents_depth)
+                noise_msratio = timesteps.float() / (noise_scheduler.config.num_train_timesteps - 1)
+                noise_msratio = noise_msratio[:, None, None, None]
+                noise = noise_multires * noise_msratio + noise_standard * (1 - noise_msratio)
+
                 if args.noise_offset:
                     # https://www.crosslabs.org//blog/diffusion-with-offset-noise
                     noise += args.noise_offset * torch.randn(
-                        (latents.shape[0], latents.shape[1], 1, 1), device=latents.device
+                        (latents_depth.shape[0], latents_depth.shape[1], 1, 1), device=latents_depth.device
                     )
-                if args.input_perturbation:
-                    new_noise = noise + args.input_perturbation * torch.randn_like(noise)
-                bsz = latents.shape[0]
-                # Sample a random timestep for each image
-                timesteps = torch.randint(0, noise_scheduler.config.num_train_timesteps, (bsz,), device=latents.device)
-                timesteps = timesteps.long()
 
                 # Add noise to the latents according to the noise magnitude at each timestep
                 # (this is the forward diffusion process)
                 if args.input_perturbation:
-                    noisy_latents = noise_scheduler.add_noise(latents, new_noise, timesteps)
+                    new_noise = noise + args.input_perturbation * torch.randn_like(noise)
+                    noisy_latents_depth = noise_scheduler.add_noise(latents_depth, new_noise, timesteps)
                 else:
-                    noisy_latents = noise_scheduler.add_noise(latents, noise, timesteps)
-
-                # Get the text embedding for conditioning
-                encoder_hidden_states = text_encoder(batch["input_ids"])[0]
+                    noisy_latents_depth = noise_scheduler.add_noise(latents_depth, noise, timesteps)
+                
+                # Aggregate input
+                noisy_latents = torch.cat([latents_rgb, noisy_latents_depth], dim=1)
+                batch_empty_text_embed = empty_text_embed.repeat((bsz, 1, 1)).type_as(noisy_latents)
 
                 # Get the target for loss depending on the prediction type
                 if args.prediction_type is not None:
@@ -922,12 +903,12 @@ def main():
                 if noise_scheduler.config.prediction_type == "epsilon":
                     target = noise
                 elif noise_scheduler.config.prediction_type == "v_prediction":
-                    target = noise_scheduler.get_velocity(latents, noise, timesteps)
+                    target = noise_scheduler.get_velocity(latents_depth, noise, timesteps)
                 else:
                     raise ValueError(f"Unknown prediction type {noise_scheduler.config.prediction_type}")
 
                 # Predict the noise residual and compute loss
-                model_pred = unet(noisy_latents, timesteps, encoder_hidden_states).sample
+                model_pred = unet(noisy_latents, timesteps, batch_empty_text_embed).sample
 
                 if args.snr_gamma is None:
                     loss = F.mse_loss(model_pred.float(), target.float(), reduction="mean")
@@ -1000,25 +981,29 @@ def main():
             if global_step >= args.max_train_steps:
                 break
 
-        if accelerator.is_main_process:
-            if args.validation_prompts is not None and epoch % args.validation_epochs == 0:
-                if args.use_ema:
-                    # Store the UNet parameters temporarily and load the EMA parameters to perform inference.
-                    ema_unet.store(unet.parameters())
-                    ema_unet.copy_to(unet.parameters())
-                log_validation(
-                    vae,
-                    text_encoder,
-                    tokenizer,
-                    unet,
-                    args,
-                    accelerator,
-                    weight_dtype,
-                    global_step,
-                )
-                if args.use_ema:
-                    # Switch back to the original UNet parameters.
-                    ema_unet.restore(unet.parameters())
+        # end of one epoch
+            
+        if accelerator.is_main_process and epoch % args.validation_epochs == 0:
+            if args.use_ema:
+                # Store the UNet parameters temporarily and load the EMA parameters to perform inference.
+                ema_unet.store(unet.parameters())
+                ema_unet.copy_to(unet.parameters())
+
+            log_validation(
+                vae,
+                text_encoder,
+                tokenizer,
+                unet,
+                args,
+                accelerator,
+                weight_dtype,
+                global_step,
+            )
+            if args.use_ema:
+                # Switch back to the original UNet parameters.
+                ema_unet.restore(unet.parameters())
+    
+    # end of all epoch
 
     # Create the pipeline using the trained modules and save it.
     accelerator.wait_for_everyone()
@@ -1027,7 +1012,7 @@ def main():
         if args.use_ema:
             ema_unet.copy_to(unet.parameters())
 
-        pipeline = StableDiffusionPipeline.from_pretrained(
+        pipeline = MarigoldPipeline.from_pretrained(
             args.pretrained_model_name_or_path,
             text_encoder=text_encoder,
             vae=vae,
@@ -1036,27 +1021,18 @@ def main():
             variant=args.variant,
         )
         pipeline.save_pretrained(args.output_dir)
-
-        # Run a final round of inference.
-        images = []
-        if args.validation_prompts is not None:
-            logger.info("Running inference for collecting generated images...")
-            pipeline = pipeline.to(accelerator.device)
-            pipeline.torch_dtype = weight_dtype
-            pipeline.set_progress_bar_config(disable=True)
-
-            if args.enable_xformers_memory_efficient_attention:
-                pipeline.enable_xformers_memory_efficient_attention()
-
-            if args.seed is None:
-                generator = None
-            else:
-                generator = torch.Generator(device=accelerator.device).manual_seed(args.seed)
-
-            for i in range(len(args.validation_prompts)):
-                with torch.autocast("cuda"):
-                    image = pipeline(args.validation_prompts[i], num_inference_steps=20, generator=generator).images[0]
-                images.append(image)
+        
+        # Run a final round of evaluation
+        log_validation(
+                vae,
+                text_encoder,
+                tokenizer,
+                unet,
+                args,
+                accelerator,
+                weight_dtype,
+                global_step,
+            )
 
         if args.push_to_hub:
             save_model_card(args, repo_id, images, repo_folder=args.output_dir)
@@ -1068,6 +1044,82 @@ def main():
             )
 
     accelerator.end_training()
+
+
+def save_model_card(
+    args,
+    repo_id: str,
+    images=None,
+    repo_folder=None,
+):
+    img_str = ""
+    if len(images) > 0:
+        image_grid = make_image_grid(images, 1, len(args.validation_prompts))
+        image_grid.save(os.path.join(repo_folder, "val_imgs_grid.png"))
+        img_str += "![val_imgs_grid](./val_imgs_grid.png)\n"
+
+    yaml = f"""
+---
+license: creativeml-openrail-m
+base_model: {args.pretrained_model_name_or_path}
+datasets:
+- {args.dataset_name}
+tags:
+- stable-diffusion
+- stable-diffusion-diffusers
+- text-to-image
+- diffusers
+inference: true
+---
+    """
+    model_card = f"""
+# Text-to-image finetuning - {repo_id}
+
+This pipeline was finetuned from **{args.pretrained_model_name_or_path}** on the **{args.dataset_name}** dataset. Below are some example images generated with the finetuned pipeline using the following prompts: {args.validation_prompts}: \n
+{img_str}
+
+## Pipeline usage
+
+You can use the pipeline like so:
+
+```python
+from diffusers import DiffusionPipeline
+import torch
+
+pipeline = DiffusionPipeline.from_pretrained("{repo_id}", torch_dtype=torch.float16)
+prompt = "{args.validation_prompts[0]}"
+image = pipeline(prompt).images[0]
+image.save("my_image.png")
+```
+
+## Training info
+
+These are the key hyperparameters used during training:
+
+* Epochs: {args.num_train_epochs}
+* Learning rate: {args.learning_rate}
+* Batch size: {args.train_batch_size}
+* Gradient accumulation steps: {args.gradient_accumulation_steps}
+* Image resolution: {args.resolution}
+* Mixed-precision: {args.mixed_precision}
+
+"""
+    wandb_info = ""
+    if is_wandb_available():
+        wandb_run_url = None
+        if wandb.run is not None:
+            wandb_run_url = wandb.run.url
+
+    if wandb_run_url is not None:
+        wandb_info = f"""
+More information on all the CLI arguments and the environment are available on your [`wandb` run page]({wandb_run_url}).
+"""
+
+    model_card += wandb_info
+
+    with open(os.path.join(repo_folder, "README.md"), "w") as f:
+        f.write(yaml + model_card)
+
 
 
 if __name__ == "__main__":
