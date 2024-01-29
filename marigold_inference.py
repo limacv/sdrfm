@@ -10,7 +10,7 @@ pipe = MarigoldPipeline.from_pretrained(
 
 pipe.to("cuda")
 
-img_path_or_url = "./examples/example_image.png"
+img_path_or_url = "./examples/swings.jpg"
 image: Image.Image = load_image(img_path_or_url)
 
 pipeline_output = pipe(

@@ -48,7 +48,14 @@ class HyperSim(Dataset):
         # depth from hdf5
         depth_fd = h5py.File(depth_path, "r")
         # in meters (Euclidean distance)
-        distance_meters = np.array(depth_fd['dataset'])
+        distance_meters = np.array(depth_fd['dataset']).astype(np.float32)
+
+        # TODO, currently inpaint invalid
+        import cv2
+        mask = np.isnan(distance_meters).astype(np.uint8) * 255
+        distance_meters = cv2.inpaint(distance_meters[..., None], mask[..., None], 3, cv2.INPAINT_TELEA)
+        distance_meters = np.nan_to_num(distance_meters, nan=1., neginf=1., posinf=1.)
+
         depth = hypersim_distance_to_depth(
             distance_meters)  # in meters (planar depth)
 

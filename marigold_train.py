@@ -187,29 +187,6 @@ def parse_args():
     )
     parser.add_argument("--seed", type=int, default=None, help="A seed for reproducible training.")
     parser.add_argument(
-        "--resolution",
-        type=int,
-        default=512,
-        help=(
-            "The resolution for input images, all the images in the train/validation dataset will be resized to this"
-            " resolution"
-        ),
-    )
-    parser.add_argument(
-        "--center_crop",
-        default=False,
-        action="store_true",
-        help=(
-            "Whether to center crop the input images to the resolution. If not set, the images will be randomly"
-            " cropped. The images will be resized to the resolution first before cropping."
-        ),
-    )
-    parser.add_argument(
-        "--random_flip",
-        action="store_true",
-        help="whether to randomly flip images horizontally",
-    )
-    parser.add_argument(
         "--train_batch_size", type=int, default=16, help="Batch size (per device) for the training dataloader."
     )
     parser.add_argument("--num_train_epochs", type=int, default=100)
@@ -601,18 +578,6 @@ def main():
         eps=args.adam_epsilon,
     )
     
-    # Preprocessing the datasets.
-    def preprocess(sample):
-        sample["depth"]
-        train_transforms = transforms.Compose(
-            [
-                transforms.Resize(args.resolution, interpolation=transforms.InterpolationMode.BILINEAR),
-                transforms.RandomHorizontalFlip() if args.random_flip else transforms.Lambda(lambda x: x),
-                transforms.ToTensor(),
-                transforms.Normalize([0.5], [0.5]),
-            ]
-        )
-
     # _encode_empty_text
     prompt = ""
     text_inputs = tokenizer(
@@ -981,7 +946,8 @@ def save_model_card(
 license: creativeml-openrail-m
 base_model: {args.pretrained_model_name_or_path}
 datasets:
-- {args.dataset_name}
+- VKITTI2
+- HyperSIM
 tags:
 - stable-diffusion
 - stable-diffusion-diffusers
@@ -993,22 +959,11 @@ inference: true
     model_card = f"""
 # Text-to-image finetuning - {repo_id}
 
-This pipeline was finetuned from **{args.pretrained_model_name_or_path}** on the **{args.dataset_name}** dataset. Below are some example images generated with the finetuned pipeline using the following prompts: {args.validation_prompts}: \n
+This pipeline was finetuned from **{args.pretrained_model_name_or_path}** on the VKITTI & HyperSIM dataset. Below are some example images generated with the finetuned pipeline using the following prompts: {args.validation_prompts}: \n
 {img_str}
 
 ## Pipeline usage
 
-You can use the pipeline like so:
-
-```python
-from diffusers import DiffusionPipeline
-import torch
-
-pipeline = DiffusionPipeline.from_pretrained("{repo_id}", torch_dtype=torch.float16)
-prompt = "{args.validation_prompts[0]}"
-image = pipeline(prompt).images[0]
-image.save("my_image.png")
-```
 
 ## Training info
 
@@ -1018,7 +973,6 @@ These are the key hyperparameters used during training:
 * Learning rate: {args.learning_rate}
 * Batch size: {args.train_batch_size}
 * Gradient accumulation steps: {args.gradient_accumulation_steps}
-* Image resolution: {args.resolution}
 * Mixed-precision: {args.mixed_precision}
 
 """
