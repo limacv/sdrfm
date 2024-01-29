@@ -9,7 +9,7 @@ from torchvision.transforms import ToTensor
 
 
 class VKITTI2(Dataset):
-    def __init__(self, data_dir_root, do_kb_crop=True, split="test"):
+    def __init__(self, data_dir_root, do_kb_crop=True, split="test", preprocess=None):
         import glob
         data_dir_root = os.path.abspath(data_dir_root)
         # image paths are of the form <data_dir_root>/rgb/<scene>/<variant>/frames/<rgb,depth>/Camera<0,1>/rgb_{}.jpg
@@ -52,6 +52,8 @@ class VKITTI2(Dataset):
                 "rgb_", "depth_").replace(".jpg", ".png") for r in self.image_files]
         else:
             raise RuntimeError(f"VKITTI2: split = {split} unrecognized")
+        
+        self.preprocess = preprocess if preprocess is not None else lambda x: x
 
     def __getitem__(self, idx):
         image_path = self.image_files[idx]
@@ -79,7 +81,7 @@ class VKITTI2(Dataset):
         depth = np.asarray(depth, dtype=np.float32) / 1.
         depth = torch.tensor(depth)[None, ...]
         sample = dict(image=image, depth=depth, dataset='kitti')
-        return sample
+        return self.preprocess(sample)
 
     def __len__(self):
         return len(self.image_files)

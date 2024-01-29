@@ -6,7 +6,7 @@ import numpy as np
 import torch
 from PIL import Image
 from torch.utils.data import DataLoader, Dataset
-from torchvision.transforms import ToTensor
+from torchvision.transforms import ToTensor, Resize
 
 
 def hypersim_distance_to_depth(npyDistance):
@@ -25,18 +25,18 @@ def hypersim_distance_to_depth(npyDistance):
 
 
 class HyperSim(Dataset):
-    def __init__(self, data_dir_root):
+    def __init__(self, data_dir_root, preprocess=None):
         # image paths are of the form <data_dir_root>/<scene>/images/scene_cam_#_final_preview/*.tonemap.jpg
         # depth paths are of the form <data_dir_root>/<scene>/images/scene_cam_#_geometry_hdf5/*.depth_meters.hdf5
         # self.image_files = glob.glob(os.path.join(
         #     data_dir_root, '*', 'images', 'scene_cam_*_final_preview', '*.tonemap.jpg'))
         # self.depth_files = [r.replace("_final_preview", "_geometry_hdf5").replace(
         #     ".tonemap.jpg", ".depth_meters.hdf5") for r in self.image_files]
-        
         self.image_files = sorted(glob.glob(os.path.join(
             data_dir_root, 'ai_*_00*', 'images', 'scene_cam_*_final_preview', '*.tonemap.jpg')))
         self.depth_files = [r.replace("_final_preview", "_geometry_hdf5").replace(
             ".tonemap.jpg", ".depth_meters.hdf5") for r in self.image_files]
+        self.preprocess = preprocess if preprocess is not None else lambda x: x
 
     def __getitem__(self, idx):
         image_path = self.image_files[idx]
@@ -55,7 +55,7 @@ class HyperSim(Dataset):
         # depth[depth > 8] = -1
         depth = torch.tensor(depth)[None]
         sample = dict(image=image, depth=depth, dataset="hypersim")
-        return sample
+        return self.preprocess(sample)
 
     def __len__(self):
         return len(self.image_files)
