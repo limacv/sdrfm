@@ -27,6 +27,7 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 import torch.utils.checkpoint
+from torch.utils.data import ConcatDataset, DataLoader
 import transformers
 from accelerate import Accelerator
 from accelerate.logging import get_logger
@@ -46,7 +47,8 @@ from diffusers import AutoencoderKL, DDPMScheduler, UNet2DConditionModel
 from diffusers.optimization import get_scheduler
 from diffusers.training_utils import EMAModel, compute_snr
 from diffusers.utils import check_min_version, deprecate, is_wandb_available, make_image_grid, load_image
-from diffusers.utils.import_utils import is_xformers_available
+from diffusers.utils.import_utils import is_xformers_available 
+from dataset import *
 import torch
 
 
@@ -150,6 +152,11 @@ def parse_args():
         type=str,
         default=None,
         help="Variant of the model files of the pretrained model identifier from huggingface.co/models, 'e.g.' fp16",
+    )
+    parser.add_argument(
+        "--vkitti_mix_rate",
+        type=float, default=0.05,
+        help="Sec. B.4: Ratio of Mixed Training Datasets"
     )
     parser.add_argument(
         "--dataset_name",
@@ -634,54 +641,27 @@ def main():
         weight_decay=args.adam_weight_decay,
         eps=args.adam_epsilon,
     )
-
-    # Get the datasets: you can either provide your own training and evaluation files (see below)
-    # or specify a Dataset from the hub (the dataset will be downloaded automatically from the datasets Hub).
-
-    # In distributed training, the load_dataset function guarantees that only one local process can concurrently
-    # download the dataset.
-    if args.dataset_name is not None:
-        # Downloading and loading a dataset from the hub.
-        dataset = load_dataset(
-            args.dataset_name,
-            args.dataset_config_name,
-            cache_dir=args.cache_dir,
-            data_dir=args.train_data_dir,
-        )
-    else:
-        data_files = {}
-        if args.train_data_dir is not None:
-            data_files["train"] = os.path.join(args.train_data_dir, "**")
-        dataset = load_dataset(
-            "imagefolder",
-            data_files=data_files,
-            cache_dir=args.cache_dir,
-        )
-        # See more about loading custom images at
-        # https://huggingface.co/docs/datasets/v2.4.0/en/image_load#imagefolder
-
+    
     # Preprocessing the datasets.
-    # We need to tokenize inputs and targets.
-    column_names = dataset["train"].column_names
+    def preprocess(sample):
+        sample["depth"]
+        train_transforms = transforms.Compose(
+            [
+                transforms.Resize(args.resolution, interpolation=transforms.InterpolationMode.BILINEAR),
+                transforms.CenterCrop(args.resolution) if args.center_crop else transforms.RandomCrop(args.resolution),
+                transforms.RandomHorizontalFlip() if args.random_flip else transforms.Lambda(lambda x: x),
+                transforms.ToTensor(),
+                transforms.Normalize([0.5], [0.5]),
+            ]
+        )
 
-    # 6. Get the column names for input/target.
-    dataset_columns = DATASET_NAME_MAPPING.get(args.dataset_name, None)
-    if args.image_column is None:
-        image_column = dataset_columns[0] if dataset_columns is not None else column_names[0]
-    else:
-        image_column = args.image_column
-        if image_column not in column_names:
-            raise ValueError(
-                f"--image_column' value '{args.image_column}' needs to be one of: {', '.join(column_names)}"
-            )
-    if args.caption_column is None:
-        caption_column = dataset_columns[1] if dataset_columns is not None else column_names[1]
-    else:
-        caption_column = args.caption_column
-        if caption_column not in column_names:
-            raise ValueError(
-                f"--caption_column' value '{args.caption_column}' needs to be one of: {', '.join(column_names)}"
-            )
+    dataset_vkitti = get_monodepth_vkitti2("train")
+    dataset_hypersim = get_monodepth_hypersim("train")
+    train_dataset = MixedDataset(
+        dataset_list = [dataset_vkitti, dataset_hypersim],
+        mix_rate_list = [args.vkitti_mix_rate, 1 - args.vkitti_mix_rate],
+        preprocess_list = [preprocess, preprocess]
+    )
 
     # _encode_empty_text
     prompt = ""
@@ -695,47 +675,14 @@ def main():
     text_input_ids = text_inputs.input_ids.to(text_encoder.device)
     empty_text_embed = text_encoder(text_input_ids)[0].to(text_encoder.dtype)
 
-    # Preprocessing the datasets.
-    train_transforms = transforms.Compose(
-        [
-            transforms.Resize(args.resolution, interpolation=transforms.InterpolationMode.BILINEAR),
-            transforms.CenterCrop(args.resolution) if args.center_crop else transforms.RandomCrop(args.resolution),
-            transforms.RandomHorizontalFlip() if args.random_flip else transforms.Lambda(lambda x: x),
-            transforms.ToTensor(),
-            transforms.Normalize([0.5], [0.5]),
-        ]
-    )
-
-    # TODO: read rgb and depth
-    # TODO: normalize the depth maps
-    def preprocess_train(examples):
-        images = [image.convert("RGB") for image in examples[image_column]]
-        examples["images"] = [train_transforms(image) for image in images]
-        examples["depth"] = [torch.flip(image[:1].repeat((3, 1, 1)), dims=[-1,]) for image in examples["images"]]
-        return examples
-
-    with accelerator.main_process_first():
-        if args.max_train_samples is not None:
-            dataset["train"] = dataset["train"].shuffle(seed=args.seed).select(range(args.max_train_samples))
-        # Set the training transforms
-        train_dataset = dataset["train"].with_transform(preprocess_train)
-
-    def collate_fn(examples):
-        images = torch.stack([example["images"] for example in examples])
-        depths = torch.stack([example["images"] for example in examples])
-        images = images.to(memory_format=torch.contiguous_format).float()
-        depths = depths.to(memory_format=torch.contiguous_format).float()
-        return {"images": images, "depths": depths}
-
     # DataLoaders creation:
-    train_dataloader = torch.utils.data.DataLoader(
+    train_dataloader = DataLoader(
         train_dataset,
         shuffle=True,
-        collate_fn=collate_fn,
         batch_size=args.train_batch_size,
         num_workers=args.dataloader_num_workers,
     )
-
+ 
     # Scheduler and math around the number of training steps.
     overrode_max_train_steps = False
     num_update_steps_per_epoch = math.ceil(len(train_dataloader) / args.gradient_accumulation_steps)
