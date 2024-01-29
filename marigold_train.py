@@ -159,48 +159,11 @@ def parse_args():
         help="Sec. B.4: Ratio of Mixed Training Datasets"
     )
     parser.add_argument(
-        "--dataset_name",
+        "--dataset_depth_mode",
         type=str,
-        default=None,
-        help=(
-            "The name of the Dataset (from the HuggingFace hub) to train on (could be your own, possibly private,"
-            " dataset). It can also be a path pointing to a local copy of a dataset in your filesystem,"
-            " or to a folder containing files that 🤗 Datasets can understand."
-        ),
-    )
-    parser.add_argument(
-        "--dataset_config_name",
-        type=str,
-        default=None,
-        help="The config of the Dataset, leave as None if there's only one config.",
-    )
-    parser.add_argument(
-        "--train_data_dir",
-        type=str,
-        default=None,
-        help=(
-            "A folder containing the training data. Folder contents must follow the structure described in"
-            " https://huggingface.co/docs/datasets/image_dataset#imagefolder. In particular, a `metadata.jsonl` file"
-            " must exist to provide the captions for the images. Ignored if `dataset_name` is specified."
-        ),
-    )
-    parser.add_argument(
-        "--image_column", type=str, default="image", help="The column of the dataset containing an image."
-    )
-    parser.add_argument(
-        "--caption_column",
-        type=str,
-        default="text",
-        help="The column of the dataset containing a caption or a list of captions.",
-    )
-    parser.add_argument(
-        "--max_train_samples",
-        type=int,
-        default=None,
-        help=(
-            "For debugging purposes or quicker training, truncate the number of training examples to this "
-            "value if set."
-        ),
+        default="marigold",
+        choices=["marigold", "my"],
+        help="the mode to normalize the depth from dataset"
     )
     parser.add_argument(
         "--val_data_dir",
@@ -434,10 +397,6 @@ def parse_args():
     if env_local_rank != -1 and env_local_rank != args.local_rank:
         args.local_rank = env_local_rank
 
-    # Sanity checks
-    if args.dataset_name is None and args.train_data_dir is None:
-        raise ValueError("Need either a dataset name or a training folder.")
-
     # default to using the same revision for the non-ema model if not specified
     if args.non_ema_revision is None:
         args.non_ema_revision = args.revision
@@ -648,20 +607,11 @@ def main():
         train_transforms = transforms.Compose(
             [
                 transforms.Resize(args.resolution, interpolation=transforms.InterpolationMode.BILINEAR),
-                transforms.CenterCrop(args.resolution) if args.center_crop else transforms.RandomCrop(args.resolution),
                 transforms.RandomHorizontalFlip() if args.random_flip else transforms.Lambda(lambda x: x),
                 transforms.ToTensor(),
                 transforms.Normalize([0.5], [0.5]),
             ]
         )
-
-    dataset_vkitti = get_monodepth_vkitti2("train")
-    dataset_hypersim = get_monodepth_hypersim("train")
-    train_dataset = MixedDataset(
-        dataset_list = [dataset_vkitti, dataset_hypersim],
-        mix_rate_list = [args.vkitti_mix_rate, 1 - args.vkitti_mix_rate],
-        preprocess_list = [preprocess, preprocess]
-    )
 
     # _encode_empty_text
     prompt = ""
@@ -674,12 +624,32 @@ def main():
     )
     text_input_ids = text_inputs.input_ids.to(text_encoder.device)
     empty_text_embed = text_encoder(text_input_ids)[0].to(text_encoder.dtype)
+    
+    set_depth_normalize_fn(args.dataset_depth_mode)
+    dataset_vkitti = get_monodepth_vkitti2("train")
+    dataset_hypersim = get_monodepth_hypersim("train")
 
-    # DataLoaders creation:
+    # train_dataset = MixedDataset(
+    #     dataset_list = [dataset_vkitti, dataset_hypersim],
+    #     mix_rate_list = [args.vkitti_mix_rate, 1 - args.vkitti_mix_rate],
+    #     preprocess_list = preprocess
+    # )
+    # train_dataloader = DataLoader(
+    #     train_dataset,
+    #     shuffle=True,
+    #     batch_size=args.train_batch_size,
+    #     num_workers=args.dataloader_num_workers,
+    # )
+
+    train_dataset = ConcatDataset([dataset_vkitti, dataset_hypersim])
+    train_sampler = MixedBatchSampler(
+        datasets=[dataset_vkitti, dataset_hypersim],
+        mix_rates=[args.vkitti_mix_rate, 1 - args.vkitti_mix_rate],
+        batch_size=args.train_batch_size,
+    )
     train_dataloader = DataLoader(
         train_dataset,
-        shuffle=True,
-        batch_size=args.train_batch_size,
+        batch_sampler=train_sampler,
         num_workers=args.dataloader_num_workers,
     )
  
@@ -786,8 +756,8 @@ def main():
         for step, batch in enumerate(train_dataloader):
             with accelerator.accumulate(unet):
                 # Convert images to latent space
-                rgb = batch["images"]
-                depth = batch["depths"]
+                rgb = batch["image"]
+                depth = batch["depth"]
                 # Sample a random timestep for each image
                 bsz = rgb.shape[0]
                 timesteps = torch.randint(0, noise_scheduler.config.num_train_timesteps, (bsz,), device=depth.device)
@@ -802,6 +772,7 @@ def main():
                     _latents = _latents * vae.config.scaling_factor
                     return _latents
                 
+                depth = depth.expand(-1, 3, -1, -1)
                 latents_rgb = _vae_encode_fn(rgb)
                 latents_depth = _vae_encode_fn(depth)
                 
