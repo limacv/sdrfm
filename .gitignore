@@ -7,4 +7,6 @@ examples
 
 data/*
 test*
+outputs/*
+scripts/*
 sd-model-finetuned
