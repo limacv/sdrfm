@@ -2,13 +2,13 @@ import glob
 import os
 
 import h5py
+import csv
 import numpy as np
 import torch
 from PIL import Image
 from torch.utils.data import DataLoader, Dataset
 from torchvision.transforms import ToTensor, Resize
-
-
+        
 def hypersim_distance_to_depth(npyDistance):
     intWidth, intHeight, fltFocal = 1024, 768, 886.81
 
@@ -25,22 +25,49 @@ def hypersim_distance_to_depth(npyDistance):
 
 
 class HyperSim(Dataset):
-    def __init__(self, data_dir_root, preprocess=None):
+    def __init__(self, data_dir_root, preprocess=None, split='test'):
         # image paths are of the form <data_dir_root>/<scene>/images/scene_cam_#_final_preview/*.tonemap.jpg
         # depth paths are of the form <data_dir_root>/<scene>/images/scene_cam_#_geometry_hdf5/*.depth_meters.hdf5
-        # self.image_files = glob.glob(os.path.join(
-        #     data_dir_root, '*', 'images', 'scene_cam_*_final_preview', '*.tonemap.jpg'))
+        csv_filename = os.path.join(data_dir_root, "depth_stats.csv")
+        assert(os.path.exists(csv_filename))
+        
+        # read the csv file first
+        with open(csv_filename, encoding="UTF-8") as file:
+            reader = csv.DictReader(file)
+            metadata = {}
+            for row in reader:
+                for column, value in row.items():
+                    metadata.setdefault(column, []).append(value)
+        
+        split_partition = np.array(metadata["split"])
+        split_index = split_partition == split
+        scene_names = np.unique(np.array(metadata["scene_name"])[split_index])
+        nan_ratio= [float(x) for x in metadata["nan_ratio"]]
+        nan_ratio = np.array(nan_ratio)[split_index]
+        filter_mask = nan_ratio<0.04 # predefined thre
+        
+
+        # self.image_files = sorted(glob.glob(os.path.join(
+        #     data_dir_root, 'ai_001_001', 'images', 'scene_cam_*_final_preview', '*.tonemap.jpg')))
         # self.depth_files = [r.replace("_final_preview", "_geometry_hdf5").replace(
         #     ".tonemap.jpg", ".depth_meters.hdf5") for r in self.image_files]
-        self.image_files = sorted(glob.glob(os.path.join(
-            data_dir_root, 'ai_*_00*', 'images', 'scene_cam_*_final_preview', '*.tonemap.jpg')))
-        self.depth_files = [r.replace("_final_preview", "_geometry_hdf5").replace(
-            ".tonemap.jpg", ".depth_meters.hdf5") for r in self.image_files]
+        
+        self.image_files = [glob.glob(os.path.join(
+            data_dir_root, scene_name, 'images', 'scene_cam_*_final_preview', '*.tonemap.jpg')) for scene_name in scene_names]
+        self.image_files = np.array(sorted([i for item in self.image_files for i in item]))
+        self.depth_files = np.array([r.replace("_final_preview", "_geometry_hdf5").replace(
+        ".tonemap.jpg", ".depth_meters.hdf5") for r in self.image_files])
+        
+        self.image_files = self.image_files[filter_mask]
+        self.depth_files = self.depth_files[filter_mask]
+        
         self.preprocess = preprocess if preprocess is not None else lambda x: x
 
+        
     def __getitem__(self, idx):
         image_path = self.image_files[idx]
         depth_path = self.depth_files[idx]
+        
 
         image = Image.open(image_path)
         image = ToTensor()(image)

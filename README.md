@@ -17,6 +17,8 @@ We now focusing on finetuning SD (similar to Marigold) to achieve multi-view ste
 ## Useful Variable:
 
 ```
+conda activate /cpfs01/shared/pjlab-lingjun-landmarks/mali1/miniconda3/envs/diffuser
+git config --global http.proxy http://58.34.83.134:31280/
 http_proxy=http://58.34.83.134:31280/
 https_proxy=http://58.34.83.134:31280/
 HTTP_PROXY=http://58.34.83.134:31280/
