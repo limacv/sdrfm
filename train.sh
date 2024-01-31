@@ -18,7 +18,6 @@ accelerate launch --mixed_precision="fp16" marigold_train.py \
   --use_ema \
   --allow_tf32 \
   --use_8bit_adam \
-  --mixed_precision "fp16" \
   --dataloader_num_workers 16 \
   --enable_xformers_memory_efficient_attention
   

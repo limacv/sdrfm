@@ -482,7 +482,7 @@ def main():
         new_conv.weight.data == conv_old.weight.data.repeat(1, 2, 1, 1) / 2.
         new_conv.bias.data == conv_old.bias.data
         _unet.conv_in = new_conv
-        _unet.config.in_channels = 8
+        _unet.config['in_channels'] = 8
     
     if unet.conv_in.in_channels == 4:  # original unet
         _double_input_channel(unet)
