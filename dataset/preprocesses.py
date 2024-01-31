@@ -36,9 +36,9 @@ def set_depth_normalize_fn(mode):  # choice from marigold, my
 def vkitti_train_preprocess(sample):
     image, depth = sample["image"], sample["depth"]  # tensor of shape 3 x H x W
     # random flip
-    if np.random.randint(1):
-        image = image[..., ::-1]
-        depth = depth[..., ::-1]
+    if np.random.randint(2):
+        image = torch.flip(image, dims=[-1])
+        depth = torch.flip(depth, dims=[-1])
     if normalize_depth_fn is _normalize_depth_marigold:
         depth = depth.clamp_max(80)
     depth = normalize_depth_fn(depth)
@@ -59,9 +59,9 @@ def hypersim_train_preprocess(sample):
     image = resize(image)
     depth = resize(depth)
     # random flip
-    if np.random.randint(1):
-        image = image[..., ::-1]
-        depth = depth[..., ::-1]
+    if np.random.randint(2):
+        image = torch.flip(image, dims=[-1])
+        depth = torch.flip(depth, dims=[-1])
     depth = normalize_depth_fn(depth)
     sample["image"] = image.contiguous()
     sample["depth"] = depth.contiguous()
