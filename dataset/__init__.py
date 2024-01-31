@@ -17,7 +17,8 @@ def get_monodepth_vkitti2(split):
 def get_monodepth_hypersim(split):
     return HyperSim(
         data_dir_root="/cpfs01/shared/pjlab-lingjun-landmarks/pjlab-lingjun-landmarks_hdd/jianglihan/Hypersim/portable_hard_drive/downloads",
-        preprocess=preprocess_functions["hypersim"][split]
+        preprocess=preprocess_functions["hypersim"][split],
+        split=split
     )
 
 

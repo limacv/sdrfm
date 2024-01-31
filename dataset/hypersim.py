@@ -8,7 +8,11 @@ import torch
 from PIL import Image
 from torch.utils.data import DataLoader, Dataset
 from torchvision.transforms import ToTensor, Resize
-        
+
+
+_NAN_THRESHOLD = 0.04
+
+
 def hypersim_distance_to_depth(npyDistance):
     intWidth, intHeight, fltFocal = 1024, 768, 886.81
 
@@ -44,8 +48,7 @@ class HyperSim(Dataset):
         scene_names = np.unique(np.array(metadata["scene_name"])[split_index])
         nan_ratio= [float(x) for x in metadata["nan_ratio"]]
         nan_ratio = np.array(nan_ratio)[split_index]
-        filter_mask = nan_ratio<0.04 # predefined thre
-        
+        filter_mask = nan_ratio < _NAN_THRESHOLD # predefined thre
 
         # self.image_files = sorted(glob.glob(os.path.join(
         #     data_dir_root, 'ai_001_001', 'images', 'scene_cam_*_final_preview', '*.tonemap.jpg')))
@@ -77,16 +80,11 @@ class HyperSim(Dataset):
         # in meters (Euclidean distance)
         distance_meters = np.array(depth_fd['dataset']).astype(np.float32)
 
-        # TODO, currently inpaint invalid
-        import cv2
-        mask = np.isnan(distance_meters).astype(np.uint8) * 255
-        distance_meters = cv2.inpaint(distance_meters[..., None], mask[..., None], 3, cv2.INPAINT_TELEA)
-        distance_meters = np.nan_to_num(distance_meters, nan=1., neginf=1., posinf=1.)
+        depth = hypersim_distance_to_depth(distance_meters)  # in meters (planar depth)
 
-        depth = hypersim_distance_to_depth(
-            distance_meters)  # in meters (planar depth)
-
-        # depth[depth > 8] = -1
+        depth_max = depth[np.logical_not(np.isnan(depth))].max()
+        depth = np.nan_to_num(depth, nan=depth_max, neginf=depth_max, posinf=depth_max)
+        
         depth = torch.tensor(depth)[None]
         sample = dict(image=image, depth=depth, dataset="hypersim")
         return self.preprocess(sample)
