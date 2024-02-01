@@ -361,7 +361,7 @@ def parse_args():
         ),
     )
     parser.add_argument(
-        "--vae_deterministic",
+        "--vae_nondeterministic",
         action="store_true",
         help=(
             "Whether to directly use mean as the latent space"
@@ -729,11 +729,13 @@ def main():
                 timesteps = timesteps.long()
 
                 def _vae_encode_fn(_inp):
-                    if not args.vae_deterministic:
+                    if args.vae_nondeterministic:
                         _latents = vae.encode(_inp.to(weight_dtype)).latent_dist.sample()
                     else:
-                        # TODO try to deterministically encode input
-                        raise NotImplementedError("to be implemented")
+                        h = vae.encoder(_inp.to(weight_dtype))
+                        moments = vae.quant_conv(h)
+                        mean, logvar = torch.chunk(moments, 2, dim=1)
+                        _latents = mean
                     _latents = _latents * vae.config.scaling_factor
                     return _latents
                 
@@ -745,7 +747,7 @@ def main():
                     b, c, w, h = x.shape
                     u = torch.nn.Upsample(size=(w, h), mode='bilinear')
                     noise = torch.randn_like(x)
-                    for i in range(6):
+                    for i in range(10):
                         r = random.random()*2+2 # Rather than always going 2x, 
                         w, h = max(1, int(w/(r**i))), max(1, int(h/(r**i)))
                         noise += u(torch.randn(b, c, w, h).to(x)) * discount**i
@@ -754,11 +756,10 @@ def main():
 
                 # Sec 3.3: The proposed annealed schedule interpolates 
                 #   between the multi-resolution noise at t = T and standard Gaussian noise at t = 0
-                noise_multires = _pyramid_noise_like(latents_depth, args.noise_discount)
-                noise_standard = torch.randn_like(latents_depth)
-                noise_msratio = timesteps.float() / (noise_scheduler.config.num_train_timesteps - 1)
+                noise_msratio = timesteps.float() / noise_scheduler.config.num_train_timesteps
                 noise_msratio = noise_msratio[:, None, None, None]
-                noise = noise_multires * noise_msratio + noise_standard * (1 - noise_msratio)
+                discount = args.noise_discount * noise_msratio
+                noise = _pyramid_noise_like(latents_depth, discount)
                 
                 # if not use these tricks...
                 noise = torch.randn_like(latents_depth)
