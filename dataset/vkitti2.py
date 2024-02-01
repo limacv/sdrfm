@@ -78,6 +78,7 @@ class VKITTI2(Dataset):
             # uv = uv[:, top_margin:top_margin + 352, left_margin:left_margin + 1216]
 
         image = ToTensor()(image)
+        image = 2 * image -1
         depth = np.asarray(depth, dtype=np.float32) / 1.
         depth = torch.tensor(depth)[None, ...]
         sample = dict(image=image, depth=depth, dataset='kitti')

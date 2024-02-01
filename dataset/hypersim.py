@@ -74,6 +74,7 @@ class HyperSim(Dataset):
 
         image = Image.open(image_path)
         image = ToTensor()(image)
+        image = image * 2 - 1
 
         # depth from hdf5
         depth_fd = h5py.File(depth_path, "r")

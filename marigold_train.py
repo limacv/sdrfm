@@ -348,7 +348,7 @@ def parse_args():
     parser.add_argument(
         "--validation_epochs",
         type=int,
-        default=5,
+        default=1,
         help="Run validation every X epochs.",
     )
     parser.add_argument(
@@ -759,6 +759,9 @@ def main():
                 noise_msratio = timesteps.float() / (noise_scheduler.config.num_train_timesteps - 1)
                 noise_msratio = noise_msratio[:, None, None, None]
                 noise = noise_multires * noise_msratio + noise_standard * (1 - noise_msratio)
+                
+                # if not use these tricks...
+                noise = torch.randn_like(latents_depth)
 
                 if args.noise_offset:
                     # https://www.crosslabs.org//blog/diffusion-with-offset-noise
