@@ -86,7 +86,7 @@ def log_validation(vae, text_encoder, tokenizer, unet, args, accelerator, weight
 
     # just download nyu-v2 ... 
     nyu_v2_ds = load_dataset("sayakpaul/nyu_depth_v2")['validation']
-    nyu_random_indices = np.random.choice(len(nyu_v2_ds), 9).tolist()
+    nyu_random_indices = np.random.choice(len(nyu_v2_ds), 20).tolist()
     nyu_save_dict = {
         "images":[],
         "gt_depths":[],
