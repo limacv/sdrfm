@@ -125,7 +125,7 @@ def log_validation(vae, text_encoder, tokenizer, unet, args, accelerator, weight
         metrics['delta1'] = depth_metrics['d1']
     
     # save image
-    for i in range(len(nyu_save_dict)):
+    for i in range(len(nyu_save_dict["images"])):
         os.makedirs(os.path.join(accelerator.logging_dir, f"out_ep{epoch:04d}","image"),exist_ok=True)
         os.makedirs(os.path.join(accelerator.logging_dir, f"out_ep{epoch:04d}","gt_depth"),exist_ok=True)
         os.makedirs(os.path.join(accelerator.logging_dir, f"out_ep{epoch:04d}","pred_depth"),exist_ok=True)
