@@ -16,9 +16,10 @@ def _normalize_depth_inv(depth: torch.Tensor):
     disp = 1 / depth
     disp = torch.nan_to_num(disp, 100, 100, 100)
     n_element = disp.nelement()
-    firstk = int(n_element * 0.02)
-    d2 = torch.kthvalue(disp.reshape(-1), firstk)
-    disp = disp / d2
+    lastk = int(n_element * 0.98)
+    d0 = disp.min()
+    d98 = torch.kthvalue(disp.reshape(-1), lastk)[0]
+    disp = (disp - d0) / (d98 - d0)
     return (disp - 0.5) * 2
 
 

@@ -24,6 +24,7 @@ from pathlib import Path
 import accelerate
 import datasets
 import numpy as np
+from PIL import Image
 import torch
 import torch.nn.functional as F
 import torch.utils.checkpoint
@@ -85,6 +86,7 @@ def log_validation(vae, text_encoder, tokenizer, unet, args, accelerator, weight
     # TODO: better way to load validation data, and also do metric computation & logging
     eval_image_names = os.listdir(args.val_data_dir)
     images = []
+    uncerts = []
     for eval_img_name in eval_image_names:
         eval_img = load_image(os.path.join(args.val_data_dir, eval_img_name))
         with torch.autocast("cuda"):
@@ -93,13 +95,18 @@ def log_validation(vae, text_encoder, tokenizer, unet, args, accelerator, weight
                            ensemble_size=args.val_ensemble_size)
             depth = res.depth_np
             depth_color = res.depth_colored
+            uncert = res.uncertainty
+            uncert = Image.fromarray((uncert * 5 * 255).clamp(0, 255).detach().cpu().numpy().astype(np.uint8))
 
         images.append(depth_color)
+        uncerts.append(uncert)
 
     # save image
-    for img_name, result in zip(eval_image_names, images):
+    for img_name, result, uncert in zip(eval_image_names, images, uncerts):
         os.makedirs(os.path.join(accelerator.logging_dir, f"out_ep{epoch:04d}"), exist_ok=True)
         result.save(os.path.join(accelerator.logging_dir, f"out_ep{epoch:04d}", img_name))
+        uncert.save(os.path.join(accelerator.logging_dir, f"out_ep{epoch:04d}", "uncertain_" + img_name))
+
     # save log
     for tracker in accelerator.trackers:
         if tracker.name == "tensorboard":
@@ -171,7 +178,7 @@ def parse_args():
         default=None,
         help=("dataset path"),
     )
-    parser.add_argument("--val_denoising_steps", type=int, default=50, help="The number of denosing step for validation.")
+    parser.add_argument("--val_denoising_steps", type=int, default=10, help="The number of denosing step for validation.")
     parser.add_argument("--val_ensemble_size", type=int, default=10, help="The number of ensemble for validation.")
     parser.add_argument(
         "--output_dir",
