@@ -43,6 +43,7 @@ from transformers import CLIPTextModel, CLIPTokenizer
 from transformers.utils import ContextManagers
 
 import diffusers
+from dataset.preprocesses import resize_max_res
 from marigold_pipeline import MarigoldPipeline
 from diffusers import AutoencoderKL, DDPMScheduler, UNet2DConditionModel
 from diffusers.optimization import get_scheduler
@@ -50,7 +51,6 @@ from diffusers.training_utils import EMAModel, compute_snr
 from diffusers.utils import check_min_version, deprecate, is_wandb_available, make_image_grid, load_image
 from diffusers.utils.import_utils import is_xformers_available 
 from dataset import *
-import torch
 from utils.metrics_utils import *
 from utils.general_utils import *
 
@@ -87,7 +87,8 @@ def log_validation(vae, text_encoder, tokenizer, unet, args, accelerator, weight
 
     # just download nyu-v2 ... 
     nyu_v2_ds = load_dataset("sayakpaul/nyu_depth_v2")['validation']
-    nyu_random_indices = np.random.choice(len(nyu_v2_ds), 20).tolist()
+    # nyu_random_indices = np.random.choice(len(nyu_v2_ds), 20).tolist()
+    nyu_random_indices = np.arrange(20).tolist()
     nyu_save_dict = {
         "images":[],
         "gt_depths":[],
@@ -156,6 +157,7 @@ def log_validation(vae, text_encoder, tokenizer, unet, args, accelerator, weight
             logger.warn(f"image logging not implemented for {tracker.name}")
 
     del pipeline
+    del nyu_save_dict
     torch.cuda.empty_cache()
 
 def parse_args():
@@ -192,7 +194,7 @@ def parse_args():
         "--dataset_depth_mode",
         type=str,
         default="marigold",
-        choices=["marigold", "my"],
+        choices=["marigold", "my","vae_range"],
         help="the mode to normalize the depth from dataset"
     )
     parser.add_argument(
@@ -216,6 +218,15 @@ def parse_args():
         help="The directory where the downloaded models and datasets will be stored.",
     )
     parser.add_argument("--seed", type=int, default=None, help="A seed for reproducible training.")
+    parser.add_argument(
+        "--recom_resolution",
+        type=int,
+        default=768,
+        help=(
+            "The resolution for resizeing the input images and the depth/disparity to make full use of the pre-trained model from \
+                from the stable diffusion vae, for common cases, do not change this parameter"
+        ),
+    )
     parser.add_argument(
         "--train_batch_size", type=int, default=16, help="Batch size (per device) for the training dataloader."
     )
@@ -751,8 +762,8 @@ def main():
         for step, batch in enumerate(train_dataloader):
             with accelerator.accumulate(unet):
                 # Convert images to latent space
-                rgb = batch["image"]
-                depth = batch["depth"]
+                rgb = resize_max_res(batch["image"])
+                depth = resize_max_res(batch["depth"].expand(-1, 3, -1, -1))
                 # Sample a random timestep for each image
                 bsz = rgb.shape[0]
                 timesteps = torch.randint(0, noise_scheduler.config.num_train_timesteps, (bsz,), device=depth.device)
@@ -769,7 +780,6 @@ def main():
                     _latents = _latents * vae.config.scaling_factor
                     return _latents
                 
-                depth = depth.expand(-1, 3, -1, -1)
                 latents_rgb = _vae_encode_fn(rgb)
                 latents_depth = _vae_encode_fn(depth)
                 

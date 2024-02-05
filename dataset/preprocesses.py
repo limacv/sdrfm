@@ -1,15 +1,24 @@
 import torch
 from torchvision.transforms import Resize
+import torch.nn as nn
+import torch.nn.functional as F
 import numpy as np
 
-
+# depth range is not [-1, 1]?
 def _normalize_depth_marigold(depth: torch.Tensor):
     n_element = depth.nelement()
     firstk, lastk = int(n_element * 0.02), int(n_element * 0.98)
     d2 = torch.kthvalue(depth.reshape(-1), firstk)[0]
     d98 = torch.kthvalue(depth.reshape(-1), lastk)[0]
     depth_normalized = (depth - d2) / (d98 - d2)
-    return (depth_normalized - 0.5) * 2
+    depth_normalized = (depth_normalized - 0.5) * 2
+    return depth_normalized.clamp(-1,1)
+
+def _normalize_depth_vae_range(depth: torch.Tensor):
+    min_value = torch.min(depth)
+    max_value = torch.max(depth)
+    depth_normalized = ((depth - min_value)/(max_value - min_value+1e-8) - 0.5) * 2  
+    return depth_normalized
 
 
 def _normalize_depth_inv(depth: torch.Tensor):
@@ -30,9 +39,26 @@ def set_depth_normalize_fn(mode):  # choice from marigold, my
         normalize_depth_fn = _normalize_depth_marigold
     elif mode == "my":
         normalize_depth_fn = _normalize_depth_inv
+    elif mode == 'vae_range':
+        normalize_depth_fn = _normalize_depth_vae_range
     else:
         raise RuntimeError(f"Unrecognized mode {mode}")
 
+def resize_max_res(input_tensor, recom_resolution=768):
+    """
+    Resize image to limit maximum edge length while keeping aspect ratio.
+    """
+    assert input_tensor.shape[1]==3
+    original_H, original_W = input_tensor.shape[2:]
+
+    downscale_factor = min(recom_resolution/original_H,
+                           recom_resolution/original_W)
+    
+    resized_input_tensor = F.interpolate(input_tensor,
+                                         scale_factor=downscale_factor,mode='bilinear',
+                                         align_corners=False)
+    
+    return resized_input_tensor
 
 def vkitti_train_preprocess(sample):
     image, depth = sample["image"], sample["depth"]  # tensor of shape 3 x H x W
