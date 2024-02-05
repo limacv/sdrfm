@@ -4,6 +4,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 import numpy as np
 
+
 # depth range is not [-1, 1]?
 def _normalize_depth_marigold(depth: torch.Tensor):
     n_element = depth.nelement()
@@ -13,6 +14,7 @@ def _normalize_depth_marigold(depth: torch.Tensor):
     depth_normalized = (depth - d2) / (d98 - d2)
     depth_normalized = (depth_normalized - 0.5) * 2
     return depth_normalized.clamp(-1,1)
+
 
 def _normalize_depth_vae_range(depth: torch.Tensor):
     min_value = torch.min(depth)
@@ -44,6 +46,7 @@ def set_depth_normalize_fn(mode):  # choice from marigold, my
     else:
         raise RuntimeError(f"Unrecognized mode {mode}")
 
+
 def resize_max_res(input_tensor, recom_resolution=768):
     """
     Resize image to limit maximum edge length while keeping aspect ratio.
@@ -59,6 +62,7 @@ def resize_max_res(input_tensor, recom_resolution=768):
                                          align_corners=False)
     
     return resized_input_tensor
+
 
 def vkitti_train_preprocess(sample):
     image, depth = sample["image"], sample["depth"]  # tensor of shape 3 x H x W
@@ -102,6 +106,7 @@ def hypersim_test_preprocess(sample):
     return sample
 
 
+# Global variables that control the behavior of the data loader
 normalize_depth_fn = None
 set_depth_normalize_fn("marigold")
 preprocess_functions = {

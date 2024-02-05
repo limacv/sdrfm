@@ -43,7 +43,6 @@ from transformers import CLIPTextModel, CLIPTokenizer
 from transformers.utils import ContextManagers
 
 import diffusers
-from dataset.preprocesses import resize_max_res
 from marigold_pipeline import MarigoldPipeline
 from diffusers import AutoencoderKL, DDPMScheduler, UNet2DConditionModel
 from diffusers.optimization import get_scheduler
@@ -218,15 +217,6 @@ def parse_args():
         help="The directory where the downloaded models and datasets will be stored.",
     )
     parser.add_argument("--seed", type=int, default=None, help="A seed for reproducible training.")
-    parser.add_argument(
-        "--recom_resolution",
-        type=int,
-        default=768,
-        help=(
-            "The resolution for resizeing the input images and the depth/disparity to make full use of the pre-trained model from \
-                from the stable diffusion vae, for common cases, do not change this parameter"
-        ),
-    )
     parser.add_argument(
         "--train_batch_size", type=int, default=16, help="Batch size (per device) for the training dataloader."
     )
@@ -762,8 +752,8 @@ def main():
         for step, batch in enumerate(train_dataloader):
             with accelerator.accumulate(unet):
                 # Convert images to latent space
-                rgb = resize_max_res(batch["image"])
-                depth = resize_max_res(batch["depth"].expand(-1, 3, -1, -1))
+                rgb = batch["image"]
+                depth = batch["depth"].expand(-1, 3, -1, -1)
                 # Sample a random timestep for each image
                 bsz = rgb.shape[0]
                 timesteps = torch.randint(0, noise_scheduler.config.num_train_timesteps, (bsz,), device=depth.device)
