@@ -51,6 +51,8 @@ from diffusers.utils import check_min_version, deprecate, is_wandb_available, ma
 from diffusers.utils.import_utils import is_xformers_available 
 from dataset import *
 import torch
+from utils.metrics_utils import *
+from utils.general_utils import *
 
 
 # Will error if the minimal version of diffusers is not installed. Remove at your own risks.
@@ -83,37 +85,61 @@ def log_validation(vae, text_encoder, tokenizer, unet, args, accelerator, weight
     if args.enable_xformers_memory_efficient_attention:
         pipeline.enable_xformers_memory_efficient_attention()
 
-    # TODO: better way to load validation data, and also do metric computation & logging
-    eval_image_names = os.listdir(args.val_data_dir)
-    images = []
-    uncerts = []
-    for eval_img_name in eval_image_names:
-        eval_img = load_image(os.path.join(args.val_data_dir, eval_img_name))
+    # just download nyu-v2 ... 
+    nyu_v2_ds = load_dataset("sayakpaul/nyu_depth_v2")['validation']
+    nyu_random_indices = np.random.choice(len(nyu_v2_ds), 20).tolist()
+    nyu_save_dict = {
+        "images":[],
+        "gt_depths":[],
+        "pred_depths":[],
+        }
+    metrics={
+        "abs_rel":[],
+        "delta1":[],
+    }
+    
+    for i, idx in enumerate(nyu_random_indices):
+        nyu_img = nyu_v2_ds[idx]['image'].convert("RGB")
+        gt_nyu_depth = np.array(nyu_v2_ds[idx]['depth_map'])[None,...] #(c,h,w)
+        mask = (gt_nyu_depth>0) & (gt_nyu_depth<10)
+        gt_nyu_depth_color = depth2color(gt_nyu_depth, pipeline.colorize_depth_maps) #PIL
+        
         with torch.autocast("cuda"):
-            res = pipeline(eval_img, 
+            res = pipeline(nyu_img, 
                            denoising_steps=args.val_denoising_steps, 
                            ensemble_size=args.val_ensemble_size)
-            depth = res.depth_np
-            depth_color = res.depth_colored
-            uncert = res.uncertainty
-            uncert = Image.fromarray((uncert * 5 * 255).clamp(0, 255).detach().cpu().numpy().astype(np.uint8))
-
-        images.append(depth_color)
-        uncerts.append(uncert)
-
+            depth = res.depth_np[None,...]
+            # depth_color = res.depth_colored
+        
+        # use the least squares fitting to align
+        scale, shift = compute_scale_and_shift(depth, gt_nyu_depth, mask)
+        scaled_prediction = scale * depth + shift
+        depth_color = depth2color(scaled_prediction, pipeline.colorize_depth_maps) #to keep the same scale for fair comparsion
+        
+        depth_metrics = compute_errors(gt_nyu_depth[mask==1],scaled_prediction[mask==1])
+            
+        nyu_save_dict["images"].append(nyu_img)
+        nyu_save_dict["gt_depths"].append(gt_nyu_depth_color)
+        nyu_save_dict["pred_depths"].append(depth_color)
+        
+        metrics['abs_rel'] = depth_metrics['abs_rel']
+        metrics['delta1'] = depth_metrics['d1']
+    
     # save image
-    for img_name, result, uncert in zip(eval_image_names, images, uncerts):
-        os.makedirs(os.path.join(accelerator.logging_dir, f"out_ep{epoch:04d}"), exist_ok=True)
-        result.save(os.path.join(accelerator.logging_dir, f"out_ep{epoch:04d}", img_name))
-        uncert.save(os.path.join(accelerator.logging_dir, f"out_ep{epoch:04d}", "uncertain_" + img_name))
-
+    for i in range(len(nyu_save_dict["images"])):
+        os.makedirs(os.path.join(accelerator.logging_dir, f"out_ep{epoch:04d}","image"),exist_ok=True)
+        os.makedirs(os.path.join(accelerator.logging_dir, f"out_ep{epoch:04d}","gt_depth"),exist_ok=True)
+        os.makedirs(os.path.join(accelerator.logging_dir, f"out_ep{epoch:04d}","pred_depth"),exist_ok=True)
+        
+        nyu_save_dict["images"][i].save(os.path.join(accelerator.logging_dir, f"out_ep{epoch:04d}","image", f"image_{i}.png"))
+        nyu_save_dict["gt_depths"][i].save(os.path.join(accelerator.logging_dir, f"out_ep{epoch:04d}","gt_depth", f"gt_depth_{i}.png"))
+        nyu_save_dict["pred_depths"][i].save(os.path.join(accelerator.logging_dir, f"out_ep{epoch:04d}","pred_depth", f"pred_depth_{i}.png"))
+        
     # save log
     for tracker in accelerator.trackers:
         if tracker.name == "tensorboard":
-            # TODO: evaluate and save metric
-            pass
-            # Tdon't save in tensorboard, instead save as image file, which allows for faster tb loading
-            # np_images = np.stack([np.asarray(img) for img in images])
+            tracker.writer.add_scalar(f'nyu_v2/abs_rel', metrics['abs_rel'].mean().item(), epoch)
+            tracker.writer.add_scalar(f'nyu_v2/delta1', metrics['delta1'].mean().item(), epoch)
             # tracker.writer.add_images("validation", np_images, epoch, dataformats="NHWC")
         elif tracker.name == "wandb":
             import wandb
@@ -131,9 +157,6 @@ def log_validation(vae, text_encoder, tokenizer, unet, args, accelerator, weight
 
     del pipeline
     torch.cuda.empty_cache()
-
-    return images
-
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Train Marigold.")
