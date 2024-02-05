@@ -1,16 +1,20 @@
 import numpy as np
+import torch
 from PIL import Image
 from marigold_pipeline import MarigoldPipeline
 from diffusers.utils import load_image
+import cv2
+
 
 pipe = MarigoldPipeline.from_pretrained(
-    "Bingxin/Marigold",
+    # "Bingxin/Marigold",
+    "/cpfs01/shared/pjlab-lingjun-landmarks/pjlab-lingjun-landmarks_hdd/jianglihan/sdrfm/outputs/clamp_depth",
     # torch_dtype=torch.float16,                # (optional) Run with half-precision (16-bit float).
 )
 
 pipe.to("cuda")
 
-img_path_or_url = "./examples/swings.jpg"
+img_path_or_url = "./examples/bee.jpg"
 image: Image.Image = load_image(img_path_or_url)
 
 pipeline_output = pipe(
@@ -24,12 +28,18 @@ pipeline_output = pipe(
     # show_progress_bar=True, # (optional) If true, will show progress bars of the inference progress.
 )
 
+depth_uncertain: torch.Tensor = pipeline_output.uncertainty                    # Predicted uncertainty map
 depth: np.ndarray = pipeline_output.depth_np                    # Predicted depth map
 depth_colored: Image.Image = pipeline_output.depth_colored      # Colorized prediction
 
 # Save as uint16 PNG
-depth_uint16 = (depth * 65535.0).astype(np.uint16)
-Image.fromarray(depth_uint16).save("./examples/depth_map.png", mode="I;16")
+# depth_uint16 = (depth_uncertain * 65535.0).astype(np.uint16)
+# Image.fromarray(depth_uint16).save("./examples/depth_map.png", mode="I;16")
+
+if depth_uncertain is not None:
+    depth_uncertain = (depth_uncertain * 5 * 255).clamp(0, 255).detach().cpu().numpy().astype(np.uint8)
+    depth_uncertain = cv2.applyColorMap(depth_uncertain, cv2.COLORMAP_VIRIDIS)
+    cv2.imwrite("./out_depth_uncertainty1.png", depth_uncertain)
 
 # Save colorized depth map
-depth_colored.save("./examples/depth_colored.png")
+depth_colored.save("./out_depth_colored1.png")
