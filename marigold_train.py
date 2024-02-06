@@ -59,14 +59,11 @@ check_min_version("0.25.0")
 
 logger = get_logger(__name__, log_level="INFO")
 
-DATASET_NAME_MAPPING = {
-    "lambdalabs/pokemon-blip-captions": ("image", "text"),
-}
-
 
 def log_validation(vae, text_encoder, tokenizer, unet, args, accelerator, weight_dtype, epoch):
     logger.info("Running validation... ")
 
+    # prepare pipeline
     pipeline = MarigoldPipeline.from_pretrained(
         args.pretrained_model_name_or_path,
         vae=accelerator.unwrap_model(vae),
@@ -83,56 +80,84 @@ def log_validation(vae, text_encoder, tokenizer, unet, args, accelerator, weight
 
     if args.enable_xformers_memory_efficient_attention:
         pipeline.enable_xformers_memory_efficient_attention()
+    
+    # start evaluating on several datasets
+    
+    if args.val_data_dir is not None:
+        logger.info(f"Evaluating on extra folder: {args.val_data_dir}")
+        eval_image_names = os.listdir(args.val_data_dir)
+        images = {}
+        for eval_img_name in eval_image_names:
+            eval_img = load_image(os.path.join(args.val_data_dir, eval_img_name))
+            with torch.autocast("cuda"):
+                res = pipeline(eval_img, 
+                            denoising_steps=args.val_denoising_steps, 
+                            ensemble_size=args.val_ensemble_size)
+                depth_color = res.depth_colored
+                depth_uncertain: torch.Tensor = res.uncertainty
+                depth_uncertain = depth2color(depth_uncertain.detach().cpu().numpy() * 5)
 
-    # just download nyu-v2 ... 
-    nyu_use_first_k = 20
-    nyu_v2_ds = load_dataset("sayakpaul/nyu_depth_v2", split=f'validation[:{nyu_use_first_k}]')
-    nyu_save_dict = {}
-    nyu_metrics=[]
-    
-    for i, nyu_sample in enumerate(nyu_v2_ds):
-        nyu_img = nyu_sample['image'].convert("RGB")
-        gt_nyu_depth = np.array(nyu_sample['depth_map'])[None,...] #(c,h,w)
-        mask = (gt_nyu_depth>0) & (gt_nyu_depth<10)
-        gt_nyu_depth_color = depth2color(gt_nyu_depth) #PIL
+            images.update({
+                f"{eval_img_name}_images": eval_img,
+                f"{eval_img_name}_depth": depth_color,
+                f"{eval_img_name}_uncert": depth_uncertain,
+            })
+
+        for img_name, result in images.items():
+            os.makedirs(os.path.join(accelerator.logging_dir, f"out_ep{epoch:04d}", "out_data_dir"), exist_ok=True)
+            result.save(os.path.join(accelerator.logging_dir, f"out_ep{epoch:04d}", "out_data_dir", img_name + ".jpg"))
+
+    if not args.val_skip_nyu: 
+        logger.info("Evaluating on NYU v2 dataset")
+        nyu_use_first_k = 20
+        nyu_v2_ds = load_dataset("sayakpaul/nyu_depth_v2", split=f'validation[:{nyu_use_first_k}]')
+        nyu_save_dict = {}
+        nyu_metrics=[]
         
-        with torch.autocast("cuda"):
-            res = pipeline(nyu_img, 
-                           denoising_steps=args.val_denoising_steps, 
-                           ensemble_size=args.val_ensemble_size)
-            depth = res.depth_np[None,...]
-            # depth_color = res.depth_colored
+        for i, nyu_sample in enumerate(nyu_v2_ds):
+            nyu_img = nyu_sample['image'].convert("RGB")
+            gt_nyu_depth = np.array(nyu_sample['depth_map'])[None,...] #(c,h,w)
+            mask = (gt_nyu_depth>0) & (gt_nyu_depth<10)
+            gt_nyu_depth_color = depth2color(gt_nyu_depth) #PIL
+            
+            with torch.autocast("cuda"):
+                res = pipeline(nyu_img, 
+                            denoising_steps=args.val_denoising_steps, 
+                            ensemble_size=args.val_ensemble_size)
+                depth = res.depth_np[None,...]
+            
+            # use the least squares fitting to align
+            scale, shift = compute_scale_and_shift(depth, gt_nyu_depth, mask)
+            scaled_prediction = scale * depth + shift
+            depth_color = depth2color(scaled_prediction) #to keep the same scale for fair comparsion
+            
+            depth_metrics = compute_errors(gt_nyu_depth[mask==1],scaled_prediction[mask==1])
+            
+            nyu_save_dict.update({
+                f"id{i:04d}_images": nyu_img,
+                f"id{i:04d}_gt": gt_nyu_depth_color,
+                f"id{i:04d}_pred": depth_color
+            })
+            nyu_metrics.append(depth_metrics)
         
-        # use the least squares fitting to align
-        scale, shift = compute_scale_and_shift(depth, gt_nyu_depth, mask)
-        scaled_prediction = scale * depth + shift
-        depth_color = depth2color(scaled_prediction) #to keep the same scale for fair comparsion
-        
-        depth_metrics = compute_errors(gt_nyu_depth[mask==1],scaled_prediction[mask==1])
-        
-        nyu_save_dict.update({
-            f"id{i:04d}_images": nyu_img,
-            f"id{i:04d}_gt": gt_nyu_depth_color,
-            f"id{i:04d}_pred": depth_color
-        })
-        nyu_metrics.append(depth_metrics)
-    
-    # save image
-    nyu_path = os.path.join(accelerator.logging_dir, f"out_ep{epoch:04d}", "out_nyu_v2")
-    os.makedirs(nyu_path,exist_ok=True)
-    for basename, img in nyu_save_dict.items():
-        img.save(os.path.join(nyu_path, basename + ".png"))
-        
-    # save log
-    nyu_metrics = listofdict2dictoflist(nyu_metrics)
-    for tracker in accelerator.trackers:
-        if tracker.name == "tensorboard":
-            for k, v in nyu_metrics.items():
-                tracker.writer.add_scalar(f'nyu_v2/{k}', sum(v) / len(v), epoch)
+        # save image
+        nyu_path = os.path.join(accelerator.logging_dir, f"out_ep{epoch:04d}", "out_nyu_v2")
+        os.makedirs(nyu_path,exist_ok=True)
+        for basename, img in nyu_save_dict.items():
+            img.save(os.path.join(nyu_path, basename + ".png"))
+            
+        # save log
+        nyu_metrics = listofdict2dictoflist(nyu_metrics)
+        for tracker in accelerator.trackers:
+            if tracker.name == "tensorboard":
+                for k, v in nyu_metrics.items():
+                    tracker.writer.add_scalar(f'nyu_v2/{k}', sum(v) / len(v), epoch)
+
+        del nyu_save_dict
 
     del pipeline
-    del nyu_save_dict
     torch.cuda.empty_cache()
+
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Train Marigold.")
@@ -171,14 +196,11 @@ def parse_args():
         choices=["marigold", "my","vae_range"],
         help="the mode to normalize the depth from dataset"
     )
-    parser.add_argument(
-        "--val_data_dir",
-        type=str,
-        default=None,
-        help=("dataset path"),
-    )
     parser.add_argument("--val_denoising_steps", type=int, default=10, help="The number of denosing step for validation.")
     parser.add_argument("--val_ensemble_size", type=int, default=10, help="The number of ensemble for validation.")
+    parser.add_argument("--val_dry_run", action="store_true", help="run evaluation before training")
+    parser.add_argument("--val_skip_nyu", action="store_true", help="whether to evaluate on nyu_v2 dataset")
+    parser.add_argument("--val_data_dir", type=str, default=None, help="evaluate extra results on the data_dir",)
     parser.add_argument(
         "--output_dir",
         type=str,
@@ -713,6 +735,18 @@ def main():
 
     else:
         initial_global_step = 0
+
+    if args.val_dry_run:
+        log_validation(
+            vae,
+            text_encoder,
+            tokenizer,
+            unet,
+            args,
+            accelerator,
+            weight_dtype,
+            global_step,
+        )
 
     progress_bar = tqdm(
         range(0, args.max_train_steps),
