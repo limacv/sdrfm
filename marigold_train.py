@@ -85,24 +85,16 @@ def log_validation(vae, text_encoder, tokenizer, unet, args, accelerator, weight
         pipeline.enable_xformers_memory_efficient_attention()
 
     # just download nyu-v2 ... 
-    nyu_v2_ds = load_dataset("sayakpaul/nyu_depth_v2")['validation']
-    # nyu_random_indices = np.random.choice(len(nyu_v2_ds), 20).tolist()
-    nyu_random_indices = np.arrange(20).tolist()
-    nyu_save_dict = {
-        "images":[],
-        "gt_depths":[],
-        "pred_depths":[],
-        }
-    metrics={
-        "abs_rel":[],
-        "delta1":[],
-    }
+    nyu_use_first_k = 20
+    nyu_v2_ds = load_dataset("sayakpaul/nyu_depth_v2", split=f'validation[:{nyu_use_first_k}]')
+    nyu_save_dict = {}
+    nyu_metrics=[]
     
-    for i, idx in enumerate(nyu_random_indices):
-        nyu_img = nyu_v2_ds[idx]['image'].convert("RGB")
-        gt_nyu_depth = np.array(nyu_v2_ds[idx]['depth_map'])[None,...] #(c,h,w)
+    for i, nyu_sample in enumerate(nyu_v2_ds):
+        nyu_img = nyu_sample['image'].convert("RGB")
+        gt_nyu_depth = np.array(nyu_sample['depth_map'])[None,...] #(c,h,w)
         mask = (gt_nyu_depth>0) & (gt_nyu_depth<10)
-        gt_nyu_depth_color = depth2color(gt_nyu_depth, pipeline.colorize_depth_maps) #PIL
+        gt_nyu_depth_color = depth2color(gt_nyu_depth) #PIL
         
         with torch.autocast("cuda"):
             res = pipeline(nyu_img, 
@@ -114,46 +106,29 @@ def log_validation(vae, text_encoder, tokenizer, unet, args, accelerator, weight
         # use the least squares fitting to align
         scale, shift = compute_scale_and_shift(depth, gt_nyu_depth, mask)
         scaled_prediction = scale * depth + shift
-        depth_color = depth2color(scaled_prediction, pipeline.colorize_depth_maps) #to keep the same scale for fair comparsion
+        depth_color = depth2color(scaled_prediction) #to keep the same scale for fair comparsion
         
         depth_metrics = compute_errors(gt_nyu_depth[mask==1],scaled_prediction[mask==1])
-            
-        nyu_save_dict["images"].append(nyu_img)
-        nyu_save_dict["gt_depths"].append(gt_nyu_depth_color)
-        nyu_save_dict["pred_depths"].append(depth_color)
         
-        metrics['abs_rel'] = depth_metrics['abs_rel']
-        metrics['delta1'] = depth_metrics['d1']
+        nyu_save_dict.update({
+            f"id{i:04d}_images": nyu_img,
+            f"id{i:04d}_gt": gt_nyu_depth_color,
+            f"id{i:04d}_pred": depth_color
+        })
+        nyu_metrics.append(depth_metrics)
     
     # save image
-    for i in range(len(nyu_save_dict["images"])):
-        os.makedirs(os.path.join(accelerator.logging_dir, f"out_ep{epoch:04d}","image"),exist_ok=True)
-        os.makedirs(os.path.join(accelerator.logging_dir, f"out_ep{epoch:04d}","gt_depth"),exist_ok=True)
-        os.makedirs(os.path.join(accelerator.logging_dir, f"out_ep{epoch:04d}","pred_depth"),exist_ok=True)
-        
-        nyu_save_dict["images"][i].save(os.path.join(accelerator.logging_dir, f"out_ep{epoch:04d}","image", f"image_{i}.png"))
-        nyu_save_dict["gt_depths"][i].save(os.path.join(accelerator.logging_dir, f"out_ep{epoch:04d}","gt_depth", f"gt_depth_{i}.png"))
-        nyu_save_dict["pred_depths"][i].save(os.path.join(accelerator.logging_dir, f"out_ep{epoch:04d}","pred_depth", f"pred_depth_{i}.png"))
+    nyu_path = os.path.join(accelerator.logging_dir, f"out_ep{epoch:04d}", "out_nyu_v2")
+    os.makedirs(nyu_path,exist_ok=True)
+    for basename, img in nyu_save_dict.items():
+        img.save(os.path.join(nyu_path, basename + ".png"))
         
     # save log
+    nyu_metrics = listofdict2dictoflist(nyu_metrics)
     for tracker in accelerator.trackers:
         if tracker.name == "tensorboard":
-            tracker.writer.add_scalar(f'nyu_v2/abs_rel', metrics['abs_rel'].mean().item(), epoch)
-            tracker.writer.add_scalar(f'nyu_v2/delta1', metrics['delta1'].mean().item(), epoch)
-            # tracker.writer.add_images("validation", np_images, epoch, dataformats="NHWC")
-        elif tracker.name == "wandb":
-            import wandb
-            tracker.log(
-                {
-                    "validation": [
-                        wandb.Image(image, caption=f"{i}: {args.validation_prompts[i]}")
-                        for i, image in enumerate(images)
-                    ]
-                }
-            )
-        
-        else:
-            logger.warn(f"image logging not implemented for {tracker.name}")
+            for k, v in nyu_metrics.items():
+                tracker.writer.add_scalar(f'nyu_v2/{k}', sum(v) / len(v), epoch)
 
     del pipeline
     del nyu_save_dict

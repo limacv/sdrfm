@@ -58,3 +58,7 @@ def colorize_depth_maps(depth_map, min_depth, max_depth, cmap="Spectral", valid_
         img_colored = img_colored_np
 
     return img_colored
+
+
+def listofdict2dictoflist(li: list):
+    return {k: [e[k] for e in li] for k in li[0].keys()}
