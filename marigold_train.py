@@ -788,7 +788,7 @@ def main():
                     noise = torch.randn_like(x)
                     for i in range(10):
                         r = random.random()*2+2 # Rather than always going 2x, 
-                        w, h = max(1, int(w/(r**i))), max(1, int(h/(r**i)))
+                        w, h = max(1, int(w/r)), max(1, int(h/r))
                         noise += u(torch.randn(b, c, w, h).to(x)) * discount**i
                         if w==1 or h==1: break 
                     return noise / noise.std() # Scale back to unit variance
@@ -799,9 +799,6 @@ def main():
                 noise_msratio = noise_msratio[:, None, None, None]
                 discount = args.noise_discount * noise_msratio
                 noise = _pyramid_noise_like(latents_depth, discount)
-                
-                # if not use these tricks...
-                noise = torch.randn_like(latents_depth)
 
                 if args.noise_offset:
                     # https://www.crosslabs.org//blog/diffusion-with-offset-noise
