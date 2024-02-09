@@ -105,7 +105,7 @@ def log_validation(vae, text_encoder, tokenizer, unet, args, accelerator, weight
 
         for img_name, result in images.items():
             os.makedirs(os.path.join(accelerator.logging_dir, f"out_ep{epoch:04d}", "out_data_dir"), exist_ok=True)
-            result.save(os.path.join(accelerator.logging_dir, f"out_ep{epoch:04d}", "out_data_dir", img_name + ".jpg"))
+            result.save(os.path.join(accelerator.logging_dir, f"out_ep{epoch:04d}", "out_data_dir", img_name + ".png"))
 
     if not args.val_skip_nyu: 
         logger.info("Evaluating on NYU v2 dataset")
@@ -787,10 +787,12 @@ def main():
                     u = torch.nn.Upsample(size=(w, h), mode='bilinear')
                     noise = torch.randn_like(x)
                     for i in range(10):
-                        r = random.random()*2+2 # Rather than always going 2x, 
-                        w, h = max(1, int(w/r)), max(1, int(h/r))
                         noise += u(torch.randn(b, c, w, h).to(x)) * discount**i
-                        if w==1 or h==1: break 
+                        r = 2 # Always going 2x seems produce better results 
+                        w, h = max(1, int(w / r)), max(1, int(h / r))
+                        if w==1 or h==1: 
+                            noise += u(torch.randn(b, c, w, h).to(x)) * discount**(i + 1)
+                            break 
                     return noise / noise.std() # Scale back to unit variance
 
                 # Sec 3.3: The proposed annealed schedule interpolates 
