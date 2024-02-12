@@ -14,6 +14,7 @@
 # See the License for the specific language governing permissions and
 
 import argparse
+import itertools
 import logging
 import math
 import os
@@ -43,6 +44,7 @@ from transformers import CLIPTextModel, CLIPTokenizer
 from transformers.utils import ContextManagers
 
 import diffusers
+from dataset.data_mono import DepthDataLoader
 from marigold_pipeline import MarigoldPipeline
 from diffusers import AutoencoderKL, DDPMScheduler, UNet2DConditionModel
 from diffusers.optimization import get_scheduler
@@ -50,8 +52,9 @@ from diffusers.training_utils import EMAModel, compute_snr
 from diffusers.utils import check_min_version, deprecate, is_wandb_available, make_image_grid, load_image
 from diffusers.utils.import_utils import is_xformers_available 
 from dataset import *
-from utils.metrics_utils import *
+from utils.config import ALL_EVAL_DATASETS, ALL_INDOOR, ALL_OUTDOOR, get_config
 from utils.general_utils import *
+from utils.misc import *
 
 
 # Will error if the minimal version of diffusers is not installed. Remove at your own risks.
@@ -95,7 +98,8 @@ def log_validation(vae, text_encoder, tokenizer, unet, args, accelerator, weight
                             ensemble_size=args.val_ensemble_size)
                 depth_color = res.depth_colored
                 depth_uncertain: torch.Tensor = res.uncertainty
-                depth_uncertain = depth2color(depth_uncertain.detach().cpu().numpy() * 5)
+                depth_uncertain_vis = depth_uncertain.detach().cpu().numpy() * 5
+                depth_uncertain = depth2color(depth_uncertain_vis, depth_uncertain_vis.min(), depth_uncertain_vis.max())
 
             images.update({
                 f"{eval_img_name}_images": eval_img,
@@ -107,53 +111,84 @@ def log_validation(vae, text_encoder, tokenizer, unet, args, accelerator, weight
             os.makedirs(os.path.join(accelerator.logging_dir, f"out_ep{epoch:04d}", "out_data_dir"), exist_ok=True)
             result.save(os.path.join(accelerator.logging_dir, f"out_ep{epoch:04d}", "out_data_dir", img_name + ".png"))
 
-    if not args.val_skip_nyu: 
-        logger.info("Evaluating on NYU v2 dataset")
-        nyu_use_first_k = 20
-        nyu_v2_ds = load_dataset("sayakpaul/nyu_depth_v2", split=f'validation[:{nyu_use_first_k}]')
-        nyu_save_dict = {}
-        nyu_metrics=[]
+    if "ALL_INDOOR" in args.val_dataset:
+        datasets = ALL_INDOOR
+    elif "ALL_OUTDOOR" in args.val_dataset:
+        datasets = ALL_OUTDOOR
+    elif "ALL" in args.val_dataset:
+        datasets = ALL_EVAL_DATASETS
+    elif "," in args.val_dataset:
+        datasets = args.val_dataset.split(",")
+    else:
+        datasets = [args.val_dataset]
+    
+    round_precision = 3
+    if args.round_vals:
+        def r(m): return round(m, round_precision)
+    else:
+        def r(m): return m
+    
+    for dataset in datasets:
+        logger.info(f"Evaluating on {dataset} dataset")
+        dataset_config = get_config("eval", dataset)
+        test_loader = DepthEvalDataLoader(dataset_config).data
+        use_first_k = args.use_first_k
+        test_loader_n = list(itertools.islice(test_loader, use_first_k))
+        metrics = RunningAverageDict()
+        save_dict={}
         
-        for i, nyu_sample in enumerate(nyu_v2_ds):
-            nyu_img = nyu_sample['image'].convert("RGB")
-            gt_nyu_depth = np.array(nyu_sample['depth_map'])[None,...] #(c,h,w)
-            mask = (gt_nyu_depth>0) & (gt_nyu_depth<10)
-            gt_nyu_depth_color = depth2color(gt_nyu_depth) #PIL
+        for i, sample in tqdm(enumerate(test_loader_n), total=len(test_loader_n)):
+            if 'has_valid_depth' in sample:
+                if not sample['has_valid_depth']:
+                    continue
+            # import pdb;pdb.set_trace()
+            image, depth = sample['image'].numpy(), sample['depth'].numpy()
+            image = image.squeeze()
+            depth = depth.squeeze()
+            if image.shape[0] == 3:
+                image = np.transpose(image,(1,2,0))
+            image = (image * 255).astype(np.uint8)
+            image = Image.fromarray(image)
             
             with torch.autocast("cuda"):
-                res = pipeline(nyu_img, 
-                            denoising_steps=args.val_denoising_steps, 
-                            ensemble_size=args.val_ensemble_size)
-                depth = res.depth_np[None,...]
+                res = pipeline(image, denoising_steps=10, ensemble_size=10)
+                pred = res.depth_np
             
-            # use the least squares fitting to align
-            scale, shift = compute_scale_and_shift(depth, gt_nyu_depth, mask)
-            scaled_prediction = scale * depth + shift
-            depth_color = depth2color(scaled_prediction) #to keep the same scale for fair comparsion
+            # mask first
+            # if depth.shape[-2:] != pred.shape[-2:]:
+            #     pred = nn.functional.interpolate(
+            #         pred, depth.shape[-2:], mode='bilinear', align_corners=True)
+                
+            valid_mask = compute_masks(depth, pred, config=dataset_config)
+            pred_metric = compute_scale_pred(depth, pred, valid_mask, config=dataset_config)
             
-            depth_metrics = compute_errors(gt_nyu_depth[mask==1],scaled_prediction[mask==1])
+            metric = compute_errors(depth[valid_mask], pred_metric[valid_mask])
+            metrics.update(metric)
             
-            nyu_save_dict.update({
-                f"id{i:04d}_images": nyu_img,
-                f"id{i:04d}_gt": gt_nyu_depth_color,
-                f"id{i:04d}_pred": depth_color
-            })
-            nyu_metrics.append(depth_metrics)
-        
+            # Save image, depth, pred for visualization
+            gt_depth_color = depth2color(depth, pred_metric.min(), pred_metric.max(), valid_mask=valid_mask)
+            # gt_depth_color = depth2color(depth, pred_metric.min(), pred_metric.max())
+            pred_depth_color = depth2color(pred_metric, pred_metric.min(), pred_metric.max())
+
+            save_dict.update({
+                    f"{i:04d}_images": image,
+                    f"{i:04d}_gt": gt_depth_color,
+                    f"{i:04d}_pred": pred_depth_color
+                })
+            
         # save image
-        nyu_path = os.path.join(accelerator.logging_dir, f"out_ep{epoch:04d}", "out_nyu_v2")
-        os.makedirs(nyu_path,exist_ok=True)
-        for basename, img in nyu_save_dict.items():
-            img.save(os.path.join(nyu_path, basename + ".png"))
-            
+        save_path = os.path.join(accelerator.logging_dir, f"out_ep{epoch:04d}", f"out_{dataset}")
+        os.makedirs(save_path,exist_ok=True)
+        for basename, img in save_dict.items():
+            img.save(os.path.join(save_path, basename + ".png"))
+        
+        metrics = {k: r(v) for k, v in metrics.get_value().items()}
         # save log
-        nyu_metrics = listofdict2dictoflist(nyu_metrics)
         for tracker in accelerator.trackers:
             if tracker.name == "tensorboard":
-                for k, v in nyu_metrics.items():
-                    tracker.writer.add_scalar(f'nyu_v2/{k}', sum(v) / len(v), epoch)
-
-        del nyu_save_dict
+                for k, v in metrics.items():
+                    tracker.writer.add_scalar(f'{dataset}/{k}', v, epoch)
+        
 
     del pipeline
     torch.cuda.empty_cache()
@@ -199,8 +234,11 @@ def parse_args():
     parser.add_argument("--val_denoising_steps", type=int, default=10, help="The number of denosing step for validation.")
     parser.add_argument("--val_ensemble_size", type=int, default=10, help="The number of ensemble for validation.")
     parser.add_argument("--val_dry_run", action="store_true", help="run evaluation before training")
-    parser.add_argument("--val_skip_nyu", action="store_true", help="whether to evaluate on nyu_v2 dataset")
-    parser.add_argument("--val_data_dir", type=str, default=None, help="evaluate extra results on the data_dir",)
+    parser.add_argument("--val_dataset", type=str, required=False, default='nyu', help="dataset to evaluate on")
+    parser.add_argument("--val_data_dir", type=str, default=None, help="evaluate extra results on the data_dir")
+    parser.add_argument("--use_first_k", type=int, default=20, help="data for the first n eval")
+    parser.add_argument("--round_vals", action="store_true", help="whether to approximate metrics")
+    
     parser.add_argument(
         "--output_dir",
         type=str,

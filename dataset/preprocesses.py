@@ -1,3 +1,4 @@
+import random
 import torch
 from torchvision.transforms import Resize
 import torch.nn as nn
@@ -33,7 +34,36 @@ def _normalize_depth_inv(depth: torch.Tensor):
     disp = (disp - d0) / (d98 - d0)
     return (disp - 0.5) * 2
 
+def augment_image(image):
+    # gamma augmentation
+    gamma = random.uniform(0.9, 1.1)
+    image_aug = image ** gamma
 
+    # brightness augmentation
+    brightness = random.uniform(0.9, 1.1)
+    image_aug = image_aug * brightness
+
+    # color augmentation
+    colors = np.random.uniform(0.9, 1.1, size=3)
+    white = np.ones((image.shape[0], image.shape[1]))
+    color_image = np.stack([white * colors[i] for i in range(3)], axis=2)
+    image_aug *= color_image
+    image_aug = np.clip(image_aug, 0, 1)
+
+    return image_aug
+
+def random_crop(img, depth, height, width):
+    assert img.shape[1] >= height
+    assert img.shape[2] >= width
+    assert img.shape[1] == depth.shape[1]
+    assert img.shape[2] == depth.shape[2]
+    x = random.randint(0, img.shape[2] - width)
+    y = random.randint(0, img.shape[1] - height)
+    img = img[:,y:y + height, x:x + width]
+    depth = depth[:,y:y + height, x:x + width]
+
+    return img, depth
+    
 def set_depth_normalize_fn(mode):  # choice from marigold, my
     global normalize_depth_fn
     print(f"Dataset.utils::set depth normalization mode to {mode}")
@@ -70,6 +100,20 @@ def vkitti_train_preprocess(sample):
     if np.random.randint(2):
         image = torch.flip(image, dims=[-1])
         depth = torch.flip(depth, dims=[-1])
+    
+    # random gamma, brightness, color augmentation
+    # if np.random.randint(2):
+    #     image = augment_image(image)
+    
+    image, depth = random_crop(
+        image, depth, 256, 256)
+    
+    image = nn.functional.interpolate(
+        image[None], 768, mode='bilinear', align_corners=True).squeeze(0)
+    
+    depth = nn.functional.interpolate(
+        depth[None], 768, mode='bilinear', align_corners=True).squeeze(0)
+        
     if normalize_depth_fn is _normalize_depth_marigold:
         depth = depth.clamp_max(80)
     depth = normalize_depth_fn(depth)
@@ -86,6 +130,7 @@ def vkitti_test_preprocess(sample):
 
 def hypersim_train_preprocess(sample):
     image, depth = sample["image"], sample["depth"]  # tensor of shape 3 x H x W
+    image = image * 2 - 1
     resize = Resize(480, antialias=True)
     image = resize(image)
     depth = resize(depth)
@@ -93,6 +138,16 @@ def hypersim_train_preprocess(sample):
     if np.random.randint(2):
         image = torch.flip(image, dims=[-1])
         depth = torch.flip(depth, dims=[-1])
+    
+    image, depth = random_crop(
+        image, depth, 256, 256)
+    
+    image = nn.functional.interpolate(
+        image[None], 768, mode='bilinear', align_corners=True).squeeze(0)
+    
+    depth = nn.functional.interpolate(
+        depth[None], 768, mode='bilinear', align_corners=True).squeeze(0)
+    
     depth = normalize_depth_fn(depth)
     sample["image"] = image.contiguous()
     sample["depth"] = depth.contiguous()
@@ -105,11 +160,24 @@ def hypersim_test_preprocess(sample):
     sample["depth"] = resize(sample["depth"])
     return sample
 
+def diode_test_preprocess(sample):
+    resize = Resize(480, antialias=True)
+    sample["image"] = resize(sample["image"])
+    sample["depth"] = resize(sample["depth"])
+    sample["valid"] = resize(sample["valid"])
+    return sample
+
+
+def remove_leading_slash(s):
+    if s[0] == '/' or s[0] == '\\':
+        return s[1:]
+    return s
 
 # Global variables that control the behavior of the data loader
 normalize_depth_fn = None
 set_depth_normalize_fn("marigold")
 preprocess_functions = {
     "vkitti": {"train": vkitti_train_preprocess, "test": vkitti_test_preprocess},
-    "hypersim": {"train": hypersim_train_preprocess, "test": hypersim_test_preprocess}
+    "hypersim": {"train": hypersim_train_preprocess, "test": hypersim_test_preprocess},
+    "diode":{'test':diode_test_preprocess}
 }

@@ -34,7 +34,6 @@ class HyperSim(Dataset):
         # depth paths are of the form <data_dir_root>/<scene>/images/scene_cam_#_geometry_hdf5/*.depth_meters.hdf5
         csv_filename = os.path.join(data_dir_root, "depth_stats.csv")
         assert(os.path.exists(csv_filename))
-        
         # read the csv file first
         with open(csv_filename, encoding="UTF-8") as file:
             reader = csv.DictReader(file)
@@ -74,7 +73,6 @@ class HyperSim(Dataset):
 
         image = Image.open(image_path)
         image = ToTensor()(image)
-        image = image * 2 - 1
 
         # depth from hdf5
         depth_fd = h5py.File(depth_path, "r")

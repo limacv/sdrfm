@@ -164,7 +164,7 @@ class MarigoldPipeline(DiffusionPipeline):
         if processing_res > 0:
             input_image = self.resize_max_res(input_image, max_edge_resolution=processing_res)
         # Convert the image to RGB, to 1.remove the alpha channel 2.convert B&W to 3-channel
-        input_image = input_image.convert("RGB")
+        input_image = input_image.convert("RGB") # PIL reader & range [0-255]
         image = np.asarray(input_image)
 
         # Normalize rgb values

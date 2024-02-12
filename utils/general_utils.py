@@ -13,8 +13,8 @@ def chw2hwc(chw):
     return hwc
 
 
-def depth2color(depth):
-    depth_color = colorize_depth_maps(depth, depth.min(), depth.max()).squeeze()
+def depth2color(depth, min_depth, max_depth, valid_mask=None):
+    depth_color = colorize_depth_maps(depth, min_depth, max_depth, valid_mask=valid_mask).squeeze()
     depth_colored = (depth_color * 255).astype(np.uint8)
     depth_colored_hwc = chw2hwc(depth_colored)
     depth_colored_img = Image.fromarray(depth_colored_hwc)
@@ -50,7 +50,7 @@ def colorize_depth_maps(depth_map, min_depth, max_depth, cmap="Spectral", valid_
         else:
             valid_mask = valid_mask[:, np.newaxis, :, :]
         valid_mask = np.repeat(valid_mask, 3, axis=1)
-        img_colored_np[~valid_mask] = 0
+        img_colored_np[~valid_mask] = 1
 
     if isinstance(depth_map, torch.Tensor):
         img_colored = torch.from_numpy(img_colored_np).float()
