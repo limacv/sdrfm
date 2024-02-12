@@ -11,3 +11,5 @@ outputs/*
 scripts/*
 sd-model-finetuned
 train.sh
+*.sh
+*.yml

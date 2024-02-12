@@ -1,5 +1,7 @@
 from torch.utils.data import Dataset, DataLoader
 from torch.utils.data import BatchSampler, SequentialSampler, RandomSampler
+from dataset.diml_indoor import DIML_Indoor
+from dataset.diml_outdoor import DIML_Outdoor
 from dataset.diode import DIODE
 from dataset.ibims import iBims
 from dataset.kitti import KITTI
@@ -48,6 +50,19 @@ def get_monodepth_diode(data_dir_root, split):
     return DIODE(
         data_dir_root = data_dir_root,
         preprocess=preprocess_functions["diode"][split],
+        split=split
+    )
+
+def get_monodepth_diml_indoor(data_dir_root, split):
+    return DIML_Indoor(
+        data_dir_root = data_dir_root,
+        preprocess=preprocess_functions["diml_indoor"][split],
+        split=split
+    )
+
+def get_monodepth_diml_outdoor(data_dir_root, split):
+    return DIML_Outdoor(
+        data_dir_root = data_dir_root,
         split=split
     )
 
@@ -111,14 +126,10 @@ class DepthEvalDataLoader(object):
             self.testing_samples = get_monodepth_ibims(config, 'test')
 
         if config.dataset == 'diml_indoor':
-            self.data = get_diml_indoor_loader(
-                data_dir_root=config.diml_indoor_root, batch_size=1, num_workers=1)
-            return
+            self.testing_samples = get_monodepth_diml_indoor(config.diml_indoor_root, 'test')
 
         if config.dataset == 'diml_outdoor':
-            self.data = get_diml_outdoor_loader(
-                data_dir_root=config.diml_outdoor_root, batch_size=1, num_workers=1)
-            return
+            self.testing_samples = get_monodepth_diml_outdoor(config.diml_outdoor_root, 'test')
 
         if "diode" in config.dataset:
             self.testing_samples = get_monodepth_diode(config[config.dataset+"_root"], 'test')
@@ -128,11 +139,6 @@ class DepthEvalDataLoader(object):
 
         if config.dataset == 'vkitti2_test':
             self.testing_samples = get_monodepth_vkitti2('test')
-
-        if config.dataset == 'ddad':
-            self.data = get_ddad_loader(config.ddad_root, resize_shape=(
-                352, 1216), batch_size=1, num_workers=1)
-            return
         
         self.data = DataLoader(self.testing_samples, 1,
             shuffle=kwargs.get("shuffle_test", False),

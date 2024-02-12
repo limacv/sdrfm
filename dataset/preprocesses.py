@@ -167,6 +167,12 @@ def diode_test_preprocess(sample):
     sample["valid"] = resize(sample["valid"])
     return sample
 
+def diml_test_preprocess(sample):
+    resize = Resize((480, 640), antialias=True)
+    sample["image"] = resize(sample["image"])
+    sample["depth"] = resize(sample["depth"])
+    return sample
+
 
 def remove_leading_slash(s):
     if s[0] == '/' or s[0] == '\\':
@@ -179,5 +185,7 @@ set_depth_normalize_fn("marigold")
 preprocess_functions = {
     "vkitti": {"train": vkitti_train_preprocess, "test": vkitti_test_preprocess},
     "hypersim": {"train": hypersim_train_preprocess, "test": hypersim_test_preprocess},
-    "diode":{'test':diode_test_preprocess}
+    "diode":{'test':diode_test_preprocess},
+    "diml_indoor":{'test':diml_test_preprocess},
+    # "diml_outdoor":{'test':diml_test_preprocess}
 }

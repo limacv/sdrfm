@@ -28,10 +28,12 @@ def eval_marigold(args, pipeline, round_vals=True, round_precision=3):
         if 'has_valid_depth' in sample:
             if not sample['has_valid_depth']:
                 continue
-        # pdb.set_trace
+        # pdb.set_trace()
         image, depth = sample['image'].numpy(), sample['depth'].numpy()
         image = image.squeeze()
         depth = depth.squeeze()
+        if image.shape[0] == 3:
+            image = np.transpose(image,(1,2,0))
         image = (image * 255).astype(np.uint8)
         image = Image.fromarray(image)
         
@@ -56,8 +58,8 @@ def eval_marigold(args, pipeline, round_vals=True, round_precision=3):
                 f"{i:04d}_pred": pred_depth_color
             })
     
-        # if i>idx_thre:
-        #     break
+        if i>idx_thre:
+            break
         
     # save image
     save_path = os.path.join("outputs", f"{dataset}")

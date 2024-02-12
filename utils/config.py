@@ -98,20 +98,9 @@ DATASETS_CONFIG = {
         "min_depth": 1e-3,
         "max_depth": 10
     },
-    "sunrgbd": {
-        "dataset": "sunrgbd",
-        "sunrgbd_root": os.path.join(HOME_DIR, "SUNRGBD/test/"),
-        "eigen_crop": True,
-        "garg_crop": False,
-        "do_kb_crop": False,
-        "min_depth_eval": 0,
-        "max_depth_eval": 8,
-        "min_depth": 1e-3,
-        "max_depth": 10
-    },
     "diml_indoor": {
         "dataset": "diml_indoor",
-        "diml_indoor_root": os.path.join(HOME_DIR, "shortcuts/datasets/diml_indoor_test/"),
+        "diml_indoor_root": os.path.join(HOME_DIR, "diml/indoor/test/"),
         "eigen_crop": True,
         "garg_crop": False,
         "do_kb_crop": False,
@@ -177,7 +166,7 @@ DATASETS_CONFIG = {
     }
 }
 
-ALL_INDOOR = ["nyu", "ibims", "diode_indoor", "hypersim_test"]
+ALL_INDOOR = ["nyu", "ibims", "diml_indoor", "diode_indoor", "hypersim_test"]
 ALL_OUTDOOR = ["kitti", "diml_outdoor", "diode_outdoor",  "vkitti2"]
 ALL_EVAL_DATASETS = ALL_INDOOR + ALL_OUTDOOR
 
