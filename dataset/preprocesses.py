@@ -105,14 +105,14 @@ def vkitti_train_preprocess(sample):
     # if np.random.randint(2):
     #     image = augment_image(image)
     
-    image, depth = random_crop(
-        image, depth, 256, 256)
+    # image, depth = random_crop(
+    #     image, depth, 256, 256)
     
-    image = nn.functional.interpolate(
-        image[None], 768, mode='bilinear', align_corners=True).squeeze(0)
+    # image = nn.functional.interpolate(
+    #     image[None], 768, mode='bilinear', align_corners=True).squeeze(0)
     
-    depth = nn.functional.interpolate(
-        depth[None], 768, mode='bilinear', align_corners=True).squeeze(0)
+    # depth = nn.functional.interpolate(
+    #     depth[None], 768, mode='bilinear', align_corners=True).squeeze(0)
         
     if normalize_depth_fn is _normalize_depth_marigold:
         depth = depth.clamp_max(80)
@@ -139,14 +139,14 @@ def hypersim_train_preprocess(sample):
         image = torch.flip(image, dims=[-1])
         depth = torch.flip(depth, dims=[-1])
     
-    image, depth = random_crop(
-        image, depth, 256, 256)
+    # image, depth = random_crop(
+    #     image, depth, 256, 256)
     
-    image = nn.functional.interpolate(
-        image[None], 768, mode='bilinear', align_corners=True).squeeze(0)
+    # image = nn.functional.interpolate(
+    #     image[None], 768, mode='bilinear', align_corners=True).squeeze(0)
     
-    depth = nn.functional.interpolate(
-        depth[None], 768, mode='bilinear', align_corners=True).squeeze(0)
+    # depth = nn.functional.interpolate(
+    #     depth[None], 768, mode='bilinear', align_corners=True).squeeze(0)
     
     depth = normalize_depth_fn(depth)
     sample["image"] = image.contiguous()
