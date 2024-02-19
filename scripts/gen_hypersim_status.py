@@ -47,7 +47,7 @@ for scene_name, camera_name, frame_id, split in tqdm(zip(scene_names, camera_nam
 
 print("Finishing checking completeness")
 
-csv_writer.writerow(["scene_name","camera_name","frame_id",'split', 'nan_ratio', 'norm_min', 'norm_max', "bump_norm_min", "bump_norm_max"])
+csv_writer.writerow(["scene_name","camera_name","frame_id",'split', 'nan_ratio', "bump_nan_ratio", 'norm_min', 'norm_max', "bump_norm_min", "bump_norm_max"])
 for scene_name, camera_name, frame_id, split in tqdm(zip(scene_names, camera_names, frame_ids, split_partitions), total=len(scene_names)):
     normal_file = os.path.join(hypersim_path, scene_name, "images", f"scene_{camera_name}_geometry_hdf5", f"frame.{int(frame_id):04d}.normal_cam.hdf5")
     normal_file = h5py.File(normal_file, "r")
@@ -77,6 +77,6 @@ for scene_name, camera_name, frame_id, split in tqdm(zip(scene_names, camera_nam
     max_norm1 = np.max(norm1[~nan_ma1])
     min_norm1 = np.min(norm1[~nan_ma1])
 
-    csv_writer.writerow([scene_name, camera_name, frame_id, split, invalid_ratio, min_norm, max_norm, min_norm1, max_norm1])
+    csv_writer.writerow([scene_name, camera_name, frame_id, split, invalid_ratio, invalid_ratio1, min_norm, max_norm, min_norm1, max_norm1])
 
 csv_file.close()
