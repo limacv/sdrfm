@@ -10,7 +10,7 @@ from torch.utils.data import DataLoader, Dataset
 from torchvision.transforms import ToTensor, Resize
 
 
-_NAN_THRESHOLD = 0.04
+_NAN_THRESHOLD = 0.02
 
 
 def hypersim_distance_to_depth(npyDistance):

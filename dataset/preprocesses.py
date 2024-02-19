@@ -1,5 +1,5 @@
 import torch
-from torchvision.transforms import Resize
+from torchvision.transforms import Resize, CenterCrop, InterpolationMode
 import torch.nn as nn
 import torch.nn.functional as F
 import numpy as np
@@ -28,18 +28,30 @@ def _normalize_depth_inv(depth: torch.Tensor):
     disp = torch.nan_to_num(disp, 100, 100, 100)
     n_element = disp.nelement()
     lastk = int(n_element * 0.98)
-    d0 = disp.min()
     d98 = torch.kthvalue(disp.reshape(-1), lastk)[0]
+    d0 = disp.min()
     disp = (disp - d0) / (d98 - d0)
-    return (disp - 0.5) * 2
+    disp = - (disp - 0.5) * 2
+    return disp.clamp(-1, 1)
 
 
-def set_depth_normalize_fn(mode):  # choice from marigold, my
+def _normalize_depth_inv_fix(depth: torch.Tensor):
+    disp = 1 / depth
+    disp = torch.nan_to_num(disp, 100, 100, 100)
+    d98 = 0.5  # a fixed number, so it's scale variant disparity
+    disp = disp / d98
+    disp = - (disp - 0.5) * 2
+    return disp.clamp(-1, 1)
+
+
+def set_depth_normalize_fn(mode):
     global normalize_depth_fn
     print(f"Dataset.utils::set depth normalization mode to {mode}")
     if mode == "marigold":
         normalize_depth_fn = _normalize_depth_marigold
-    elif mode == "my":
+    elif mode == "disparity":
+        normalize_depth_fn = _normalize_depth_inv_fix
+    elif mode == "disparity_normalized":
         normalize_depth_fn = _normalize_depth_inv
     elif mode == 'vae_range':
         normalize_depth_fn = _normalize_depth_vae_range

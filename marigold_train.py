@@ -193,7 +193,7 @@ def parse_args():
         "--dataset_depth_mode",
         type=str,
         default="marigold",
-        choices=["marigold", "my","vae_range"],
+        choices=["marigold", "disparity_normalized", "disparity","vae_range"],
         help="the mode to normalize the depth from dataset"
     )
     parser.add_argument("--val_denoising_steps", type=int, default=10, help="The number of denosing step for validation.")
