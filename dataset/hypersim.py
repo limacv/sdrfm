@@ -11,28 +11,14 @@ from torchvision.transforms import ToTensor, Resize
 
 
 _NAN_THRESHOLD = 0.02
-
-
-def hypersim_distance_to_depth(npyDistance):
-    intWidth, intHeight, fltFocal = 1024, 768, 886.81
-
-    npyImageplaneX = np.linspace((-0.5 * intWidth) + 0.5, (0.5 * intWidth) - 0.5, intWidth).reshape(
-        1, intWidth).repeat(intHeight, 0).astype(np.float32)[:, :, None]
-    npyImageplaneY = np.linspace((-0.5 * intHeight) + 0.5, (0.5 * intHeight) - 0.5,
-                                 intHeight).reshape(intHeight, 1).repeat(intWidth, 1).astype(np.float32)[:, :, None]
-    npyImageplaneZ = np.full([intHeight, intWidth, 1], fltFocal, np.float32)
-    npyImageplane = np.concatenate(
-        [npyImageplaneX, npyImageplaneY, npyImageplaneZ], 2)
-
-    npyDepth = npyDistance / np.linalg.norm(npyImageplane, 2, 2) * fltFocal
-    return npyDepth
+_NORMAL_PREFIX = "normal_cam"  # "normal_cam", "normal_bump_cam"
 
 
 class HyperSim(Dataset):
     def __init__(self, data_dir_root, preprocess=None, split='test'):
         # image paths are of the form <data_dir_root>/<scene>/images/scene_cam_#_final_preview/*.tonemap.jpg
         # depth paths are of the form <data_dir_root>/<scene>/images/scene_cam_#_geometry_hdf5/*.depth_meters.hdf5
-        csv_filename = os.path.join(data_dir_root, "depth_stats.csv")
+        csv_filename = os.path.join(data_dir_root, "normal_stats_v1.csv")
         assert(os.path.exists(csv_filename))
         
         # read the csv file first
@@ -45,49 +31,47 @@ class HyperSim(Dataset):
         
         split_partition = np.array(metadata["split"])
         split_index = split_partition == split
-        scene_names = np.unique(np.array(metadata["scene_name"])[split_index])
-        nan_ratio= [float(x) for x in metadata["nan_ratio"]]
-        nan_ratio = np.array(nan_ratio)[split_index]
+        nan_ratio = np.array(metadata["nan_ratio"]).astype(np.float32)
         filter_mask = nan_ratio < _NAN_THRESHOLD # predefined thre
+        filter_mask = np.logical_and(filter_mask, split_index)
 
-        # self.image_files = sorted(glob.glob(os.path.join(
-        #     data_dir_root, 'ai_001_001', 'images', 'scene_cam_*_final_preview', '*.tonemap.jpg')))
-        # self.depth_files = [r.replace("_final_preview", "_geometry_hdf5").replace(
-        #     ".tonemap.jpg", ".depth_meters.hdf5") for r in self.image_files]
-        
-        self.image_files = [glob.glob(os.path.join(
-            data_dir_root, scene_name, 'images', 'scene_cam_*_final_preview', '*.tonemap.jpg')) for scene_name in scene_names]
-        self.image_files = np.array(sorted([i for item in self.image_files for i in item]))
-        self.depth_files = np.array([r.replace("_final_preview", "_geometry_hdf5").replace(
-        ".tonemap.jpg", ".depth_meters.hdf5") for r in self.image_files])
-        
-        self.image_files = self.image_files[filter_mask]
-        self.depth_files = self.depth_files[filter_mask]
-        
+        scene_names = np.array(metadata["scene_name"])[filter_mask]
+        camera_names = np.array(metadata["camera_name"])[filter_mask]
+        frame_ids = np.array(metadata["frame_id"])[filter_mask]
+
+        self.image_files = []
+        self.normal_files = []
+        for scene, cam, frm in zip(scene_names, camera_names, frame_ids):
+            self.image_files.append(os.path.join(
+                data_dir_root, scene, "images", f"scene_{cam}_final_preview", f"frame.{int(frm):04d}.tonemap.jpg"
+            ))
+            self.normal_files.append(os.path.join(
+                data_dir_root, scene, "images", f"scene_{cam}_geometry_hdf5", f"frame.{int(frm):04d}.{_NORMAL_PREFIX}.hdf5"
+            ))
+
+        for p in self.image_files:
+            assert os.path.isfile(p), f"HyperSim::{p} does not exist"
+        for p in self.normal_files:
+            assert os.path.isfile(p), f"HyperSim::{p} does not exist"
+
         self.preprocess = preprocess if preprocess is not None else lambda x: x
-
         
     def __getitem__(self, idx):
         image_path = self.image_files[idx]
-        depth_path = self.depth_files[idx]
+        normal_path = self.normal_files[idx]
         
-
         image = Image.open(image_path)
         image = ToTensor()(image)
         image = image * 2 - 1
 
-        # depth from hdf5
-        depth_fd = h5py.File(depth_path, "r")
+        normal = h5py.File(normal_path, "r")
         # in meters (Euclidean distance)
-        distance_meters = np.array(depth_fd['dataset']).astype(np.float32)
-
-        depth = hypersim_distance_to_depth(distance_meters)  # in meters (planar depth)
-
-        depth_max = depth[np.logical_not(np.isnan(depth))].max()
-        depth = np.nan_to_num(depth, nan=depth_max, neginf=depth_max, posinf=depth_max)
+        normal = np.array(normal['dataset']).astype(np.float32)
+        nan_ma = np.isnan(normal.sum(axis=-1))
+        normal[nan_ma, :] = np.array([0, 0, 1])
         
-        depth = torch.tensor(depth)[None]
-        sample = dict(image=image, depth=depth, dataset="hypersim")
+        normal = torch.tensor(normal).permute(2, 0, 1)
+        sample = dict(image=image, normal=normal, dataset="hypersim")
         return self.preprocess(sample)
 
     def __len__(self):
@@ -108,8 +92,6 @@ if __name__ == "__main__":
     print("Total files", len(loader.dataset))
     for i, sample in enumerate(loader):
         print(sample["image"].shape)
-        print(sample["depth"].shape)
-        # print(sample["dataset"])
-        print(sample['depth'].min(), sample['depth'].max())
+        print(sample["normal"].shape)
         if i > 5:
             break

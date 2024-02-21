@@ -1,20 +1,11 @@
 from torch.utils.data import Dataset
 from torch.utils.data import BatchSampler, SequentialSampler, RandomSampler
 from .hypersim import HyperSim
-from .vkitti2 import VKITTI2
-from .preprocesses import set_depth_normalize_fn, preprocess_functions
+from .preprocesses import set_normal_normalize_fn, preprocess_functions
 import numpy as np
 
 
-def get_monodepth_vkitti2(split):
-    return VKITTI2(
-        data_dir_root="/cpfs01/shared/pjlab-lingjun-landmarks/pjlab-lingjun-landmarks_hdd/nerf_public/VKITTI2",
-        preprocess=preprocess_functions["vkitti"][split],
-        split=split,
-    )
-
-
-def get_monodepth_hypersim(split):
+def get_mononormal_hypersim(split):
     return HyperSim(
         data_dir_root="/cpfs01/shared/pjlab-lingjun-landmarks/pjlab-lingjun-landmarks_hdd/jianglihan/Hypersim/portable_hard_drive/downloads",
         preprocess=preprocess_functions["hypersim"][split],
