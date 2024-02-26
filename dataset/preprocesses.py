@@ -48,6 +48,7 @@ def hypersim_train_preprocess(sample):
     if np.random.randint(2):
         image = torch.flip(image, dims=[-1])
         normal = torch.flip(normal, dims=[-1])
+        normal[0] = - normal[0]  # invert x axis
     normal = normalize_normal_fn(normal)
     sample["image"] = image.contiguous()
     sample["normal"] = normal.contiguous()

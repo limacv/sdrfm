@@ -11,14 +11,16 @@ from torchvision.transforms import ToTensor, Resize
 
 
 _NAN_THRESHOLD = 0.02
-_NORMAL_PREFIX = "normal_cam"  # "normal_cam", "normal_bump_cam"
+_ERR2_THRESHOLD = 0.1
+_STD_THRESHOLD = 0.1
+_NORMAL_PREFIX = "normal_bump_cam"  # "normal_cam", "normal_bump_cam"
 
 
 class HyperSim(Dataset):
     def __init__(self, data_dir_root, preprocess=None, split='test'):
         # image paths are of the form <data_dir_root>/<scene>/images/scene_cam_#_final_preview/*.tonemap.jpg
         # depth paths are of the form <data_dir_root>/<scene>/images/scene_cam_#_geometry_hdf5/*.depth_meters.hdf5
-        csv_filename = os.path.join(data_dir_root, "normal_stats_v1.csv")
+        csv_filename = os.path.join(data_dir_root, "normal_stats_v2.csv")
         assert(os.path.exists(csv_filename))
         
         # read the csv file first
@@ -34,6 +36,17 @@ class HyperSim(Dataset):
         nan_ratio = np.array(metadata["nan_ratio"]).astype(np.float32)
         filter_mask = nan_ratio < _NAN_THRESHOLD # predefined thre
         filter_mask = np.logical_and(filter_mask, split_index)
+
+        err2_ratio = np.array(metadata["err2_ratio"]).astype(np.float32)
+        err2_mask = err2_ratio < _ERR2_THRESHOLD
+        filter_mask = np.logical_and(filter_mask, err2_mask)
+
+        stdx = np.array(metadata["stdx"]).astype(np.float32)
+        stdy = np.array(metadata["stdy"]).astype(np.float32)
+        stdz = np.array(metadata["stdz"]).astype(np.float32)
+        std = np.stack([stdx, stdy, stdz], axis=-1).max(axis=-1)
+        std_mask = std > _STD_THRESHOLD
+        filter_mask = np.logical_and(filter_mask, std_mask)
 
         scene_names = np.array(metadata["scene_name"])[filter_mask]
         camera_names = np.array(metadata["camera_name"])[filter_mask]

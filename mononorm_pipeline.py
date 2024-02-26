@@ -474,7 +474,10 @@ class MonoNormPipeline(DiffusionPipeline):
         To ensemble multiple rotation invariant normal images (up to global rotation),
         """
         # TODO better emsembling method, currently just average
-        return input_images.mean(dim=0), None
+        normal = input_images.mean(dim=0)
+        uncert = input_images.std(dim=0).sum(dim=0)
+        normal = torch.nn.functional.normalize(normal, dim=0)
+        return normal, uncert
     
         def inter_distances(tensors: torch.Tensor):
             """
