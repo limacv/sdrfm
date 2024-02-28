@@ -8,6 +8,5 @@ examples
 data/*
 test*
 outputs/*
-scripts/*
 sd-model-finetuned
 train.sh
