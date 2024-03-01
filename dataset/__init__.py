@@ -1,6 +1,7 @@
 from torch.utils.data import Dataset
 from torch.utils.data import BatchSampler, SequentialSampler, RandomSampler
 from .hypersim import HyperSim
+from .hypersim_mv import HyperSimMultiView
 from .vkitti2 import VKITTI2
 from .preprocesses import set_depth_normalize_fn, preprocess_functions
 import numpy as np
@@ -19,6 +20,14 @@ def get_monodepth_hypersim(split):
         data_dir_root="/cpfs01/shared/pjlab-lingjun-landmarks/pjlab-lingjun-landmarks_hdd/jianglihan/Hypersim/portable_hard_drive/downloads",
         preprocess=preprocess_functions["hypersim"][split],
         split=split
+    )
+
+def get_mv_hypersim(split, topk):
+    return HyperSimMultiView(
+        data_dir_root="/cpfs01/shared/pjlab-lingjun-landmarks/pjlab-lingjun-landmarks_hdd/jianglihan/Hypersim/portable_hard_drive/downloads",
+        preprocess=preprocess_functions["mv_hypersim"][split],
+        split=split,
+        topk=topk
     )
 
 

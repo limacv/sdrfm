@@ -118,10 +118,26 @@ def hypersim_test_preprocess(sample):
     return sample
 
 
+def hypersim_train_preprocess(sample):
+    images, depths = sample["images"], sample["depths"]  # tensor of shape 3 x H x W
+    resize = Resize(480, antialias=True)
+    images = resize(images)
+    depths = resize(depths)
+    # random flip
+    if np.random.randint(2):
+        images = torch.flip(images, dims=[-1])
+        depths = torch.flip(depths, dims=[-1])
+    depths = normalize_depth_fn(depths)
+    sample["images"] = images.contiguous()
+    sample["depths"] = depths.contiguous()
+    return sample
+
+
 # Global variables that control the behavior of the data loader
 normalize_depth_fn = None
 set_depth_normalize_fn("marigold")
 preprocess_functions = {
     "vkitti": {"train": vkitti_train_preprocess, "test": vkitti_test_preprocess},
-    "hypersim": {"train": hypersim_train_preprocess, "test": hypersim_test_preprocess}
+    "hypersim": {"train": hypersim_train_preprocess, "test": hypersim_test_preprocess},
+    "mv_hypersim": {"train": hypersim_train_preprocess, "test": None}
 }
