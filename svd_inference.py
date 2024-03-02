@@ -16,4 +16,5 @@ image = image.resize((1024, 576))
 
 generator = torch.manual_seed(42)
 frames = pipe(image, decode_chunk_size=14, generator=generator).frames[0]
-export_to_video(frames, "outputs/svd/generated.mov", fps=7)
+for i, f in enumerate(frames):
+    f.save(f"outputs/svd/{i:02d}.jpg")
