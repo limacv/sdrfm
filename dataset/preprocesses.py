@@ -44,6 +44,12 @@ def _normalize_depth_inv_fix(depth: torch.Tensor):
     return disp.clamp(-1, 1)
 
 
+def _normalize_depth_absolute(depth: torch.Tensor):
+    depth = torch.where(depth > 1, 2 - 1 / depth, depth)
+    depth = depth - 1
+    return depth.clamp(-1, 1)  # unnecessary
+
+
 def set_depth_normalize_fn(mode):
     global normalize_depth_fn
     print(f"Dataset.utils::set depth normalization mode to {mode}")
@@ -55,6 +61,8 @@ def set_depth_normalize_fn(mode):
         normalize_depth_fn = _normalize_depth_inv
     elif mode == 'vae_range':
         normalize_depth_fn = _normalize_depth_vae_range
+    elif mode == "absolute":
+        normalize_depth_fn = _normalize_depth_absolute
     else:
         raise RuntimeError(f"Unrecognized mode {mode}")
 
