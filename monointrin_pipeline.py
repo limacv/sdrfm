@@ -19,7 +19,7 @@
 
 
 import math
-from typing import Dict, Union
+from typing import Dict, Union, List
 
 import matplotlib
 import numpy as np
@@ -107,6 +107,7 @@ class MonoNormPipeline(DiffusionPipeline):
     def __call__(
         self,
         input_image: Image,
+        out_assets: List[str],
         denoising_steps: int = 10,
         ensemble_size: int = 10,
         processing_res: int = 768,
@@ -140,12 +141,6 @@ class MonoNormPipeline(DiffusionPipeline):
                 Colormap used to colorize the depth map.
             ensemble_kwargs (`dict`, *optional*, defaults to `None`):
                 Arguments for detailed ensembling settings.
-        Returns:
-            `MarigoldDepthOutput`: Output class for Marigold monocular depth prediction pipeline, including:
-            - **depth_np** (`np.ndarray`) Predicted depth map, with depth values in the range of [0, 1]
-            - **depth_colored** (`PIL.Image.Image`) Colorized depth map, with the shape of [3, H, W] and values in [0, 1]
-            - **uncertainty** (`None` or `np.ndarray`) Uncalibrated uncertainty(MAD, median absolute deviation)
-                    coming from ensembling. None if `ensemble_size = 1`
         """
 
         device = self.device
@@ -156,7 +151,7 @@ class MonoNormPipeline(DiffusionPipeline):
         assert processing_res >= 0
         assert denoising_steps >= 1
         assert ensemble_size >= 1
-
+        assert all(k in self.text_embed_dict.keys() for k in out_assets)
         # ----------------- Image Preprocess -----------------
         # Resize image
         if processing_res > 0:
@@ -174,7 +169,6 @@ class MonoNormPipeline(DiffusionPipeline):
         # assert rgb_norm.min() >= 0.0 and rgb_norm.max() <= 1.0
         assert rgb_norm.min() >= -1.0 and rgb_norm.max() <= 1.0
 
-        # ----------------- Predicting depth -----------------
         # Batch repeated input image
         duplicated_rgb = torch.stack([rgb_norm] * ensemble_size)
         single_rgb_dataset = TensorDataset(duplicated_rgb)
@@ -189,64 +183,98 @@ class MonoNormPipeline(DiffusionPipeline):
 
         single_rgb_loader = DataLoader(single_rgb_dataset, batch_size=_bs, shuffle=False)
 
-        # Predict depth maps (batched)
-        normal_pred_ls = []
-        if show_progress_bar:
-            iterable = tqdm(single_rgb_loader, desc=" " * 2 + "Inference batches", leave=False)
-        else:
-            iterable = single_rgb_loader
-        for batch in iterable:
-            (batched_img,) = batch
-            normal_pred_raw = self.single_infer(
-                rgb_in=batched_img,
-                num_inference_steps=denoising_steps,
-                show_pbar=show_progress_bar,
-            )
-            normal_pred_ls.append(normal_pred_raw.detach().clone())
-        normal_preds = torch.concat(normal_pred_ls, axis=0).squeeze()
+        assets_pred_ls = {k: [] for k in out_assets}
+        for asset_k in out_assets:
+            if show_progress_bar:
+                iterable = tqdm(single_rgb_loader, desc=" " * 2 + "Inference batches", leave=False)
+            else:
+                iterable = single_rgb_loader
+            for batch in iterable:
+                (batched_img,) = batch
+                pred_raw = self.single_infer(
+                    rgb_in=batched_img,
+                    text_embed=self.text_embed_dict[asset_k],
+                    num_inference_steps=denoising_steps,
+                    show_pbar=show_progress_bar,
+                )
+                assets_pred_ls[asset_k].append(pred_raw.detach().clone())
+        assets_pred_ls = {k: torch.cat(v, dim=0).squeeze() for k, v in assets_pred_ls.items()}
         torch.cuda.empty_cache()  # clear vram cache for ensembling
 
         # ----------------- Test-time ensembling -----------------
-        if ensemble_size > 1:
-            normal_pred, pred_uncert = self.ensemble_normals(normal_preds, **(ensemble_kwargs or {}))
-        else:
-            normal_pred = normal_preds
-            pred_uncert = None
+        mono_output = MonoIntrinOutput()
+        for k, v in assets_pred_ls:
+            if ensemble_size > 1:
+                if k == "depth":
+                    v, uncert = self.ensemble_depths(v, **(ensemble_kwargs or {}))
+                elif k == "normal":
+                    v, uncert = self.ensemble_normals(v)
+                else:
+                    v, uncert = self.ensemble_rgbs(v)
+            else:
+                uncert = None
 
         # Resize back to original resolution
         if match_input_res:
             rsz = Resize(input_size[::-1], interpolation=InterpolationMode.BICUBIC, antialias=True)
-            normal_pred = rsz(normal_pred)
+            v = rsz(v)
         
-        normal_pred = normal_pred.permute(1, 2, 0).cpu().numpy().astype(np.float32)
+        v = v.permute(1, 2, 0).cpu().numpy().astype(np.float32)
 
         # Colorize
-        normal_color = np.clip(normal_pred + 1 / 2, 0, 1)
-        normal_color = (normal_color * 255).astype(np.uint8)
-        normal_color = Image.fromarray(normal_color)
-        return MonoIntrinOutput(
-            normal_np=normal_pred,
-            normal_pil=normal_color,
-            uncertainty=pred_uncert,
-        )
+        if k == "depth":
+            depth_colored = self.colorize_depth_maps(v, 0, 1).squeeze()
+            depth_colored = (depth_colored * 255).astype(np.uint8)
+            depth_colored_hwc = self.chw2hwc(depth_colored)
+            depth_colored_img = Image.fromarray(depth_colored_hwc)
+            mono_output.depth_np = v
+            mono_output.depth_pil = depth_colored_img
+            mono_output.depth_uncertainty = uncert
+        elif k == "normal":
+            normal_color = np.clip(v + 1 / 2, 0, 1)
+            normal_color = (normal_color * 255).astype(np.uint8)
+            normal_color = Image.fromarray(normal_color)
+            mono_output.normal_np = v
+            mono_output.normal_pil = normal_color
+            mono_output.normal_uncertainty = uncert
+        elif k == "shading":
+            mono_output.shading_np = v
+            mono_output.shading_uncertainty = uncert
+        elif k == "albedo":
+            mono_output.albedo_np = v
+            mono_output.albedo_uncertainty = uncert
+        elif k == "specular":
+            mono_output.specular_np = v
+            mono_output.specular_uncertainty = uncert
 
-    def _encode_empty_text(self):
+        return mono_output
+
+    def _prepare_text_embed(self):
         """
-        Encode text embedding for empty prompt.
+        Encode text embedding for prompt.
         """
-        prompt = ""
-        text_inputs = self.tokenizer(
-            prompt,
-            padding="do_not_pad",
-            max_length=self.tokenizer.model_max_length,
-            truncation=True,
-            return_tensors="pt",
-        )
-        text_input_ids = text_inputs.input_ids.to(self.text_encoder.device)
-        self.empty_text_embed = self.text_encoder(text_input_ids)[0].to(self.dtype)
+        prompts = {
+            "depth": "hyper detailed depth map, 4k",
+            "normal": "hyper detailed surface normal map, 4k",
+            "shading": "hyper detailed diffuse shading map, diffuse illuminance, ambient lighting, 4k",
+            "albedo": "hyper detailed albedo map, diffuse reflectance, flat lighting, no shadows, 4k",
+            "specular": "hyper detailed specular highlights, glossy reflections, shiny, 4k",
+        }
+        
+        for k, p in prompts.items():
+            text_inputs = self.tokenizer(
+                p,
+                padding="do_not_pad",
+                max_length=self.tokenizer.model_max_length,
+                truncation=True,
+                return_tensors="pt",
+            )
+            text_input_ids = text_inputs.input_ids.to(self.text_encoder.device)
+            text_embed = self.text_encoder(text_input_ids)[0].to(self.dtype)
+            self.text_embed_dict[k] = text_embed
 
     @torch.no_grad()
-    def single_infer(self, rgb_in: torch.Tensor, num_inference_steps: int, show_pbar: bool) -> torch.Tensor:
+    def single_infer(self, rgb_in: torch.Tensor, text_embed: torch.Tensor, num_inference_steps: int, show_pbar: bool) -> torch.Tensor:
         """
         Perform an individual depth prediction without ensembling.
 
@@ -269,13 +297,11 @@ class MonoNormPipeline(DiffusionPipeline):
         # Encode image
         rgb_latent = self._encode_rgb(rgb_in)
 
-        # Initial depth map (noise)
-        normal_latent = torch.randn(rgb_latent.shape, device=device, dtype=self.dtype)  # [B, 4, h, w]
+        # Initial map (noise)
+        latent = torch.randn(rgb_latent.shape, device=device, dtype=self.dtype)  # [B, 4, h, w]
 
-        # Batched empty text embedding
-        if self.empty_text_embed is None:
-            self._encode_empty_text()
-        batch_empty_text_embed = self.empty_text_embed.repeat((rgb_latent.shape[0], 1, 1))  # [B, 2, 1024]
+        text_embed = text_embed.type_as(latent)
+        batch_text_embed = text_embed.repeat((rgb_latent.shape[0], 1, 1))  # [B, 2, 1024]
 
         # Denoising loop
         if show_pbar:
@@ -289,19 +315,15 @@ class MonoNormPipeline(DiffusionPipeline):
             iterable = enumerate(timesteps)
 
         for i, t in iterable:
-            unet_input = torch.cat([rgb_latent, normal_latent], dim=1)  # this order is important
-
+            unet_input = torch.cat([rgb_latent, latent], dim=1)  # this order is important
             # predict the noise residual
-            noise_pred = self.unet(unet_input, t, encoder_hidden_states=batch_empty_text_embed).sample  # [B, 4, h, w]
-
+            noise_pred = self.unet(unet_input, t, encoder_hidden_states=batch_text_embed).sample  # [B, 4, h, w]
             # compute the previous noisy sample x_t -> x_t-1
-            normal_latent = self.scheduler.step(noise_pred, t, normal_latent).prev_sample
+            latent = self.scheduler.step(noise_pred, t, latent).prev_sample
         torch.cuda.empty_cache()
-        normal = self._decode_normal(normal_latent)
-
-        # clip prediction
-        normal = torch.clip(normal, -1.0, 1.0)
-        return normal
+        asset = self._decode_vae(latent)
+        asset = torch.clip(asset, -1, 1)
+        return asset
 
     def _encode_rgb(self, rgb_in: torch.Tensor) -> torch.Tensor:
         """
@@ -322,24 +344,14 @@ class MonoNormPipeline(DiffusionPipeline):
         rgb_latent = mean * self.rgb_latent_scale_factor
         return rgb_latent
 
-    def _decode_normal(self, depth_latent: torch.Tensor) -> torch.Tensor:
-        """
-        Decode depth latent into depth map.
-
-        Args:
-            depth_latent (`torch.Tensor`):
-                Depth latent to be decoded.
-
-        Returns:
-            `torch.Tensor`: Decoded depth map.
-        """
+    def _decode_vae(self, latent: torch.Tensor) -> torch.Tensor:
         # scale latent
-        depth_latent = depth_latent / self.depth_latent_scale_factor
+        latent = latent / self.depth_latent_scale_factor
         # decode
-        z = self.vae.post_quant_conv(depth_latent)
-        normal = self.vae.decoder(z)
+        z = self.vae.post_quant_conv(latent)
+        output = self.vae.decoder(z)
         
-        return normal
+        return output
 
     @staticmethod
     def resize_max_res(img: Image.Image, max_edge_resolution: int) -> Image.Image:
@@ -473,11 +485,6 @@ class MonoNormPipeline(DiffusionPipeline):
     @staticmethod
     def ensemble_normals(
         input_images: torch.Tensor,
-        regularizer_strength: float = 0.02,
-        max_iter: int = 2,
-        tol: float = 1e-3,
-        reduction: str = "median",
-        max_res: int = None,
     ):
         """
         To ensemble multiple rotation invariant normal images (up to global rotation),
@@ -488,6 +495,26 @@ class MonoNormPipeline(DiffusionPipeline):
         normal = torch.nn.functional.normalize(normal, dim=0)
         return normal, uncert
     
+    @staticmethod
+    def ensemble_rgbs(
+        input_images: torch.Tensor,
+    ):
+        """
+        To ensemble multiple rgb images),
+        """
+        mean = input_images.mean(dim=0)
+        uncert = input_images.std(dim=0).sum(dim=0)
+        return mean, uncert
+
+    @staticmethod
+    def ensemble_depths(
+        input_depths: torch.Tensor,
+        regularizer_strength: float = 0.02,
+        max_iter: int = 2,
+        tol: float = 1e-3,
+        reduction: str = "median",
+        max_res: int = None,
+    ):
         def inter_distances(tensors: torch.Tensor):
             """
             To calculate the distance between each two depth maps.
@@ -500,28 +527,28 @@ class MonoNormPipeline(DiffusionPipeline):
             dist = torch.cat(distances, dim=0)
             return dist
 
-        device = input_images.device
-        dtype = input_images.dtype
+        device = input_depths.device
+        dtype = input_depths.dtype
         np_dtype = np.float32
 
-        original_input = input_images.clone()
-        n_img = input_images.shape[0]
-        ori_shape = input_images.shape
+        original_input = input_depths.clone()
+        n_img = input_depths.shape[0]
+        ori_shape = input_depths.shape
 
         if max_res is not None:
             scale_factor = torch.min(max_res / torch.tensor(ori_shape[-2:]))
             if scale_factor < 1:
                 downscaler = torch.nn.Upsample(scale_factor=scale_factor, mode="nearest")
-                input_images = downscaler(torch.from_numpy(input_images)).numpy()
+                input_depths = downscaler(torch.from_numpy(input_depths)).numpy()
 
         # init guess
-        _min = np.min(input_images.reshape((n_img, -1)).cpu().numpy(), axis=1)
-        _max = np.max(input_images.reshape((n_img, -1)).cpu().numpy(), axis=1)
+        _min = np.min(input_depths.reshape((n_img, -1)).cpu().numpy(), axis=1)
+        _max = np.max(input_depths.reshape((n_img, -1)).cpu().numpy(), axis=1)
         s_init = 1.0 / (_max - _min).reshape((-1, 1, 1))
         t_init = (-1 * s_init.flatten() * _min.flatten()).reshape((-1, 1, 1))
         x = np.concatenate([s_init, t_init]).reshape(-1).astype(np_dtype)
 
-        input_images = input_images.to(device)
+        input_depths = input_depths.to(device)
 
         # objective function
         def closure(x):
@@ -531,7 +558,7 @@ class MonoNormPipeline(DiffusionPipeline):
             s = torch.from_numpy(s).to(dtype=dtype).to(device)
             t = torch.from_numpy(t).to(dtype=dtype).to(device)
 
-            transformed_arrays = input_images * s.view((-1, 1, 1)) + t.view((-1, 1, 1))
+            transformed_arrays = input_depths * s.view((-1, 1, 1)) + t.view((-1, 1, 1))
             dists = inter_distances(transformed_arrays)
             sqrt_dist = torch.sqrt(torch.mean(dists**2))
 
@@ -566,22 +593,22 @@ class MonoNormPipeline(DiffusionPipeline):
         t = torch.from_numpy(t).to(dtype=dtype).to(device)
         transformed_arrays = original_input * s.view(-1, 1, 1) + t.view(-1, 1, 1)
         if "mean" == reduction:
-            aligned_images = torch.mean(transformed_arrays, dim=0)
+            aligned_depths = torch.mean(transformed_arrays, dim=0)
             std = torch.std(transformed_arrays, dim=0)
             uncertainty = std
         elif "median" == reduction:
-            aligned_images = torch.median(transformed_arrays, dim=0).values
+            aligned_depths = torch.median(transformed_arrays, dim=0).values
             # MAD (median absolute deviation) as uncertainty indicator
-            abs_dev = torch.abs(transformed_arrays - aligned_images)
+            abs_dev = torch.abs(transformed_arrays - aligned_depths)
             mad = torch.median(abs_dev, dim=0).values
             uncertainty = mad
         else:
             raise ValueError(f"Unknown reduction method: {reduction}")
 
         # Scale and shift to [0, 1]
-        _min = torch.min(aligned_images)
-        _max = torch.max(aligned_images)
-        aligned_images = (aligned_images - _min) / (_max - _min)
+        _min = torch.min(aligned_depths)
+        _max = torch.max(aligned_depths)
+        aligned_depths = (aligned_depths - _min) / (_max - _min)
         uncertainty /= _max - _min
 
-        return aligned_images, uncertainty
+        return aligned_depths, uncertainty
