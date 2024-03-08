@@ -19,6 +19,7 @@ _NAN_THRESHOLD = 0.02
 _ERR2_THRESHOLD = 0.1
 _STD_THRESHOLD = 0.1
 _NORMAL_PREFIX = "normal_cam"  # "normal_cam", "normal_bump_cam"
+_FORCE_ALL_SPLIT = False
 
 
 class HyperSimMono(Dataset):
@@ -40,6 +41,8 @@ class HyperSimMono(Dataset):
         
         split_partition = np.array(metadata["split"])
         split_index = split_partition == split
+        if _FORCE_ALL_SPLIT:
+            split_index[:] = True
         nan_ratio = np.array(metadata["nan_ratio"]).astype(np.float32)
         filter_mask = nan_ratio < _NAN_THRESHOLD # predefined thre
         filter_mask = np.logical_and(filter_mask, split_index)

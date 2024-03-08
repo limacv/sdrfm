@@ -94,7 +94,8 @@ def log_validation(vae, text_encoder, tokenizer, unet, args, accelerator, weight
         images = {}
         for eval_img_name in eval_image_names:
             eval_img = load_image(os.path.join(args.val_data_dir, eval_img_name))
-            images[f"{eval_img_name}_images"] = eval_img
+            basename = eval_img_name.split('.')[0]
+            images[f"{basename}_images.jpg"] = eval_img
 
             with torch.autocast("cuda"):
                 res = pipeline(eval_img, 
@@ -103,14 +104,14 @@ def log_validation(vae, text_encoder, tokenizer, unet, args, accelerator, weight
                                ensemble_size=args.val_ensemble_size)
             
             for asset_name, (asset, asset_pil, asset_uncert) in res.items():
-                images[f"{eval_img_name}_{asset_name}"] = asset_pil
+                images[f"{basename}_{asset_name}.png"] = asset_pil
                 if asset_uncert is not None:
                     asset_uncert = depth2color(asset_uncert.detach().cpu().numpy() * 5)
-                    images[f"{eval_img_name}_uncert_{asset_name}"] = asset_uncert,
+                    images[f"{basename}_uncert_{asset_name}.png"] = asset_uncert
 
         for img_name, result in images.items():
             os.makedirs(os.path.join(accelerator.logging_dir, f"out_ep{epoch:04d}", "out_data_dir"), exist_ok=True)
-            result.save(os.path.join(accelerator.logging_dir, f"out_ep{epoch:04d}", "out_data_dir", img_name + ".png"))
+            result.save(os.path.join(accelerator.logging_dir, f"out_ep{epoch:04d}", "out_data_dir", img_name))
 
     if False:  # TODO not args.val_skip_nyu: 
         logger.info("Evaluating on NYU v2 dataset")

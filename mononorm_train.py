@@ -504,8 +504,8 @@ def main():
     def _double_input_channel(_unet):    # Sec. 3.2: Adapted denoising U-Net
         conv_old = _unet.conv_in
         new_conv = torch.nn.Conv2d(8, conv_old.out_channels, conv_old.kernel_size, conv_old.stride, conv_old.padding, conv_old.dilation, conv_old.groups)
-        new_conv.weight.data == conv_old.weight.data.repeat(1, 2, 1, 1) / 2.
-        new_conv.bias.data == conv_old.bias.data
+        new_conv.weight.data = conv_old.weight.data.repeat(1, 2, 1, 1) / 2.
+        new_conv.bias.data = conv_old.bias.data
         _unet.conv_in = new_conv
         _unet.config['in_channels'] = 8
     
