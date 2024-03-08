@@ -43,7 +43,7 @@ from transformers import CLIPTextModel, CLIPTokenizer
 from transformers.utils import ContextManagers
 
 import diffusers
-from mononorm_pipeline import MonoNormPipeline
+from monointrin_pipeline import MonoIntrinPipeline, prepare_text_embed
 from diffusers import AutoencoderKL, DDPMScheduler, UNet2DConditionModel
 from diffusers.optimization import get_scheduler
 from diffusers.training_utils import EMAModel, compute_snr
@@ -64,7 +64,7 @@ def log_validation(vae, text_encoder, tokenizer, unet, args, accelerator, weight
     logger.info("Running validation... ")
 
     # prepare pipeline
-    pipeline = MonoNormPipeline.from_pretrained(
+    pipeline = MonoIntrinPipeline.from_pretrained(
         args.pretrained_model_name_or_path,
         vae=accelerator.unwrap_model(vae),
         text_encoder=accelerator.unwrap_model(text_encoder),
@@ -82,28 +82,31 @@ def log_validation(vae, text_encoder, tokenizer, unet, args, accelerator, weight
         pipeline.enable_xformers_memory_efficient_attention()
     
     # start evaluating on several datasets
-    
+    assets_training = args.dataset_assets.split(',')
+    if "d2normal" in assets_training:
+        assets_training.remove("normal")
+        assets_training.remove("d2normal")
+        assets_training.append("normal")
+
     if args.val_data_dir is not None:
         logger.info(f"Evaluating on extra folder: {args.val_data_dir}")
         eval_image_names = os.listdir(args.val_data_dir)
         images = {}
         for eval_img_name in eval_image_names:
             eval_img = load_image(os.path.join(args.val_data_dir, eval_img_name))
+            images[f"{eval_img_name}_images"] = eval_img
+
             with torch.autocast("cuda"):
                 res = pipeline(eval_img, 
-                            denoising_steps=args.val_denoising_steps, 
-                            ensemble_size=args.val_ensemble_size)
-                normal_color = res.normal_pil
-                uncertain = res.uncertainty
-                if uncertain is not None:
-                    uncertain = depth2color(uncertain.detach().cpu().numpy() * 5)
-
-            images.update({
-                f"{eval_img_name}_images": eval_img,
-                f"{eval_img_name}_norm": normal_color,
-            })
-            if uncertain is not None:
-                images[f"{eval_img_name}_uncert"] = uncertain,
+                               out_assets=assets_training,
+                               denoising_steps=args.val_denoising_steps, 
+                               ensemble_size=args.val_ensemble_size)
+            
+            for asset_name, (asset, asset_pil, asset_uncert) in res.items():
+                images[f"{eval_img_name}_{asset_name}"] = asset_pil
+                if asset_uncert is not None:
+                    asset_uncert = depth2color(asset_uncert.detach().cpu().numpy() * 5)
+                    images[f"{eval_img_name}_uncert_{asset_name}"] = asset_uncert,
 
         for img_name, result in images.items():
             os.makedirs(os.path.join(accelerator.logging_dir, f"out_ep{epoch:04d}", "out_data_dir"), exist_ok=True)
@@ -161,6 +164,20 @@ def log_validation(vae, text_encoder, tokenizer, unet, args, accelerator, weight
     torch.cuda.empty_cache()
 
 
+def _pyramid_noise_like(x, discount=0.9):
+    b, c, w, h = x.shape
+    u = torch.nn.Upsample(size=(w, h), mode='bilinear')
+    noise = torch.randn_like(x)
+    for i in range(10):
+        noise += u(torch.randn(b, c, w, h).to(x)) * discount**i
+        r = 2 # Always going 2x seems produce better results 
+        w, h = max(1, int(w / r)), max(1, int(h / r))
+        if w==1 or h==1: 
+            noise += u(torch.randn(b, c, w, h).to(x)) * discount**(i + 1)
+            break 
+    return noise / noise.std() # Scale back to unit variance
+
+
 def parse_args():
     parser = argparse.ArgumentParser(description="Train Marigold.")
     parser.add_argument(
@@ -193,8 +210,27 @@ def parse_args():
         choices=["clip", "norm", "clipnorm","none"],
         help="the mode to normalize the depth from dataset"
     )
+    parser.add_argument(
+        "--dataset_depth_mode",
+        type=str,
+        default="marigold",
+        choices=["marigold", "disparity_normalized", "disparity","vae_range"],
+        help="the mode to normalize the depth from dataset"
+    )
+    parser.add_argument(
+        "--dataset_hypersim_resolution",
+        type=int,
+        default=480,
+        help="the output resolution of the hypersim dataset"
+    )
+    parser.add_argument(
+        "--dataset_assets",
+        type=str,
+        default="depth",
+        help="depth, normal, d2normal, albedo, shading, specular, split by ','"
+    )
     parser.add_argument("--val_denoising_steps", type=int, default=20, help="The number of denosing step for validation.")
-    parser.add_argument("--val_ensemble_size", type=int, default=1, help="The number of ensemble for validation.")
+    parser.add_argument("--val_ensemble_size", type=int, default=10, help="The number of ensemble for validation.")
     parser.add_argument("--val_dry_run", action="store_true", help="run evaluation before training")
     parser.add_argument("--val_skip_nyu", action="store_true", help="whether to evaluate on nyu_v2 dataset")
     parser.add_argument("--val_data_dir", type=str, default=None, help="evaluate extra results on the data_dir",)
@@ -604,19 +640,16 @@ def main():
     )
     
     # _encode_empty_text
-    prompt = ""
-    text_inputs = tokenizer(
-        prompt,
-        padding="do_not_pad",
-        max_length=tokenizer.model_max_length,
-        truncation=True,
-        return_tensors="pt",
+    text_embed_dict = prepare_text_embed(
+        tokenizer, text_encoder
     )
-    text_input_ids = text_inputs.input_ids.to(text_encoder.device)
-    empty_text_embed = text_encoder(text_input_ids)[0].to(text_encoder.dtype)
     
+    set_hypersim_resolution(args.dataset_hypersim_resolution)
     set_normal_normalize_fn(args.dataset_normal_mode)
-    dataset_hypersim = get_mononormal_hypersim("train")
+    set_depth_normalize_fn(args.dataset_depth_mode)
+
+    assets = args.dataset_assets.split(',')
+    dataset_hypersim = get_mono_hypersim("train", assets)
 
     # train_dataset = MixedDataset(
     #     dataset_list = [dataset_vkitti, dataset_hypersim],
@@ -752,12 +785,9 @@ def main():
         for step, batch in enumerate(train_dataloader):
             with accelerator.accumulate(unet):
                 # Convert images to latent space
-                rgb = batch["image"]
-                normal = batch["normal"]
+                rgb = batch.pop("image")
                 # Sample a random timestep for each image
                 bsz = rgb.shape[0]
-                timesteps = torch.randint(0, noise_scheduler.config.num_train_timesteps, (bsz,), device=normal.device)
-                timesteps = timesteps.long()
 
                 def _vae_encode_fn(_inp):
                     if args.vae_nondeterministic:
@@ -771,78 +801,79 @@ def main():
                     return _latents
                 
                 latents_rgb = _vae_encode_fn(rgb)
-                latents_normal = _vae_encode_fn(normal)
-                
-                def _pyramid_noise_like(x, discount=0.9):
-                    b, c, w, h = x.shape
-                    u = torch.nn.Upsample(size=(w, h), mode='bilinear')
-                    noise = torch.randn_like(x)
-                    for i in range(10):
-                        noise += u(torch.randn(b, c, w, h).to(x)) * discount**i
-                        r = 2 # Always going 2x seems produce better results 
-                        w, h = max(1, int(w / r)), max(1, int(h / r))
-                        if w==1 or h==1: 
-                            noise += u(torch.randn(b, c, w, h).to(x)) * discount**(i + 1)
-                            break 
-                    return noise / noise.std() # Scale back to unit variance
 
+                # Adding noise
+                timesteps = torch.randint(0, noise_scheduler.config.num_train_timesteps, (bsz,), device=rgb.device)
+                timesteps = timesteps.long()
                 # Sec 3.3: The proposed annealed schedule interpolates 
                 #   between the multi-resolution noise at t = T and standard Gaussian noise at t = 0
                 noise_msratio = timesteps.float() / noise_scheduler.config.num_train_timesteps
                 noise_msratio = noise_msratio[:, None, None, None]
                 discount = args.noise_discount * noise_msratio
-                noise = _pyramid_noise_like(latents_normal, discount)
+                noise = _pyramid_noise_like(latents_rgb, discount)
 
                 if args.noise_offset:
                     # https://www.crosslabs.org//blog/diffusion-with-offset-noise
                     noise += args.noise_offset * torch.randn(
-                        (latents_normal.shape[0], latents_normal.shape[1], 1, 1), device=latents_normal.device
+                        (latents_rgb.shape[0], latents_rgb.shape[1], 1, 1), device=latents_rgb.device
                     )
 
-                # Add noise to the latents according to the noise magnitude at each timestep
-                # (this is the forward diffusion process)
-                if args.input_perturbation:
-                    new_noise = noise + args.input_perturbation * torch.randn_like(noise)
-                    noisy_latents_depth = noise_scheduler.add_noise(latents_normal, new_noise, timesteps)
-                else:
-                    noisy_latents_depth = noise_scheduler.add_noise(latents_normal, noise, timesteps)
-                
-                # Aggregate input
-                noisy_latents = torch.cat([latents_rgb, noisy_latents_depth], dim=1)
-                batch_empty_text_embed = empty_text_embed.repeat((bsz, 1, 1)).type_as(noisy_latents)
+                total_loss = 0
+                for asset_k, asset_gt in batch.items():
+                    if asset_gt.size(1) == 1:
+                        asset_gt = asset_gt.expand(-1, 3, -1, -1)
+                    latents_asset = _vae_encode_fn(asset_gt)
 
-                # Get the target for loss depending on the prediction type
-                if args.prediction_type is not None:
-                    # set prediction_type of scheduler if defined
-                    noise_scheduler.register_to_config(prediction_type=args.prediction_type)
+                    # Add noise to the latents according to the noise magnitude at each timestep
+                    # (this is the forward diffusion process)
+                    if args.input_perturbation:
+                        new_noise = noise + args.input_perturbation * torch.randn_like(noise)
+                        noisy_latents = noise_scheduler.add_noise(latents_asset, new_noise, timesteps)
+                    else:
+                        noisy_latents = noise_scheduler.add_noise(latents_asset, noise, timesteps)
+                        
+                    # Aggregate input
+                    noisy_latents = torch.cat([latents_rgb, noisy_latents], dim=1)
 
-                if noise_scheduler.config.prediction_type == "epsilon":
-                    target = noise
-                elif noise_scheduler.config.prediction_type == "v_prediction":
-                    target = noise_scheduler.get_velocity(latents_normal, noise, timesteps)
-                else:
-                    raise ValueError(f"Unknown prediction type {noise_scheduler.config.prediction_type}")
+                    # text embed
+                    text_embed = text_embed_dict[asset_k]
+                    batch_text_embed = text_embed.repeat((bsz, 1, 1)).type_as(noisy_latents)
 
-                # Predict the noise residual and compute loss
-                model_pred = unet(noisy_latents, timesteps, batch_empty_text_embed).sample
+                    # Get the target for loss depending on the prediction type
+                    if args.prediction_type is not None:
+                        # set prediction_type of scheduler if defined
+                        noise_scheduler.register_to_config(prediction_type=args.prediction_type)
 
-                if args.snr_gamma is None:
-                    loss = F.mse_loss(model_pred.float(), target.float(), reduction="mean")
-                else:
-                    # Compute loss-weights as per Section 3.4 of https://arxiv.org/abs/2303.09556.
-                    # Since we predict the noise instead of x_0, the original formulation is slightly changed.
-                    # This is discussed in Section 4.2 of the same paper.
-                    snr = compute_snr(noise_scheduler, timesteps)
-                    if noise_scheduler.config.prediction_type == "v_prediction":
-                        # Velocity objective requires that we add one to SNR values before we divide by them.
-                        snr = snr + 1
-                    mse_loss_weights = (
-                        torch.stack([snr, args.snr_gamma * torch.ones_like(timesteps)], dim=1).min(dim=1)[0] / snr
-                    )
+                    if noise_scheduler.config.prediction_type == "epsilon":
+                        target = noise
+                    elif noise_scheduler.config.prediction_type == "v_prediction":
+                        target = noise_scheduler.get_velocity(latents_asset, noise, timesteps)
+                    else:
+                        raise ValueError(f"Unknown prediction type {noise_scheduler.config.prediction_type}")
 
-                    loss = F.mse_loss(model_pred.float(), target.float(), reduction="none")
-                    loss = loss.mean(dim=list(range(1, len(loss.shape)))) * mse_loss_weights
-                    loss = loss.mean()
+                    # Predict the noise residual and compute loss
+                    model_pred = unet(noisy_latents, timesteps, batch_text_embed).sample
+
+                    if args.snr_gamma is None:
+                        loss = F.mse_loss(model_pred.float(), target.float(), reduction="mean")
+                    else:
+                        # Compute loss-weights as per Section 3.4 of https://arxiv.org/abs/2303.09556.
+                        # Since we predict the noise instead of x_0, the original formulation is slightly changed.
+                        # This is discussed in Section 4.2 of the same paper.
+                        snr = compute_snr(noise_scheduler, timesteps)
+                        if noise_scheduler.config.prediction_type == "v_prediction":
+                            # Velocity objective requires that we add one to SNR values before we divide by them.
+                            snr = snr + 1
+                        mse_loss_weights = (
+                            torch.stack([snr, args.snr_gamma * torch.ones_like(timesteps)], dim=1).min(dim=1)[0] / snr
+                        )
+
+                        loss = F.mse_loss(model_pred.float(), target.float(), reduction="none")
+                        loss = loss.mean(dim=list(range(1, len(loss.shape)))) * mse_loss_weights
+                        loss = loss.mean()
+
+                    total_loss = total_loss + loss
+                    # end of loss computation for each asset
 
                 # Gather the losses across all processes for logging (if we use distributed training).
                 avg_loss = accelerator.gather(loss.repeat(args.train_batch_size)).mean()
@@ -928,7 +959,7 @@ def main():
         if args.use_ema:
             ema_unet.copy_to(unet.parameters())
 
-        pipeline = MonoNormPipeline.from_pretrained(
+        pipeline = MonoIntrinPipeline.from_pretrained(
             args.pretrained_model_name_or_path,
             text_encoder=text_encoder,
             vae=vae,

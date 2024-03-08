@@ -116,7 +116,7 @@ def hypersim_train_preprocess(sample: dict):
         image = torch.flip(image, dims=[-1])
     sample["image"] = image.contiguous()
     
-    depth = sample.get("sample", None)
+    depth = sample.get("depth", None)
     if depth is not None:
         depth = resize(depth)
         if do_flip:
@@ -126,29 +126,29 @@ def hypersim_train_preprocess(sample: dict):
 
     normal = sample.get("normal", None)
     if normal is not None:
-        normal = resize_n(normal)
+        normal = resize(normal)
         if do_flip:
             normal = torch.flip(normal, dims=[-1])
             normal[0] = - normal[0]  # invert x axis
         normal = normalize_normal_fn(normal)
         sample["normal"] = normal.contiguous()
 
-    albedo = albedo.get("albedo", None)
-    if "albedo" is not None:
+    albedo = sample.get("albedo", None)
+    if albedo is not None:
         albedo = resize(albedo)
         if do_flip:
             albedo = torch.flip(albedo, dims=[-1])
         sample["albedo"] = albedo.contiguous()
 
-    shading = shading.get("shading", None)
-    if "albedo" is not None:
+    shading = sample.get("shading", None)
+    if shading is not None:
         shading = resize(shading)
         if do_flip:
             shading = torch.flip(shading, dims=[-1])
         sample["shading"] = shading.contiguous()
 
-    specular = specular.get("specular", None)
-    if "albedo" is not None:
+    specular = sample.get("specular", None)
+    if specular is not None:
         specular = resize(specular)
         if do_flip:
             specular = torch.flip(specular, dims=[-1])

@@ -44,22 +44,33 @@ from diffusers.utils import BaseOutput, check_min_version
 check_min_version("0.25.0")
 
 
-class MonoIntrinOutput(BaseOutput):
-    depth_np: Union[None, np.ndarray]
-    depth_pil: Union[None, Image.Image]
-    depth_uncertainty: Union[None, np.ndarray]
-    normal_np: Union[None, np.ndarray]
-    normal_pil: Union[None, Image.Image]
-    normal_uncertainty: Union[None, np.ndarray]
-    albedo_np: Union[None, np.ndarray]
-    albedo_uncertainty: Union[None, np.ndarray]
-    shading_np: Union[None, np.ndarray]
-    shading_uncertainty: Union[None, np.ndarray]
-    specular_np: Union[None, np.ndarray]
-    specular_uncertainty: Union[None, np.ndarray]
+def prepare_text_embed(tokenizer, text_encoder) -> Dict[str, torch.Tensor]:
+    """
+    Encode text embedding for prompt.
+    """
+    prompts = {
+        "depth": "detailed depth map, 4k",
+        "normal": "detailed surface normal map, 4k",
+        "shading": "detailed diffuse shading map, diffuse illuminance, ambient lighting, 4k",
+        "albedo": "albedo map, diffuse reflectance, flat lighting, no shadows, 4k",
+        "specular": "specular highlights, glossy reflections, shiny, 4k",
+    }
+    text_embed_dict = {}
+    for k, p in prompts.items():
+        text_inputs = tokenizer(
+            p,
+            padding="do_not_pad",
+            max_length=tokenizer.model_max_length,
+            truncation=True,
+            return_tensors="pt",
+        )
+        text_input_ids = text_inputs.input_ids.to(text_encoder.device)
+        text_embed = text_encoder(text_input_ids)[0]
+        text_embed_dict[k] = text_embed
+    return text_embed_dict
 
 
-class MonoNormPipeline(DiffusionPipeline):
+class MonoIntrinPipeline(DiffusionPipeline):
     """
     Pipeline for monocular depth estimation using Marigold: https://marigoldmonodepth.github.io.
 
@@ -100,8 +111,7 @@ class MonoNormPipeline(DiffusionPipeline):
             text_encoder=text_encoder,
             tokenizer=tokenizer,
         )
-
-        self.text_embed_dict = {}
+        self.text_embed_dict = prepare_text_embed(tokenizer, text_encoder)
 
     @torch.no_grad()
     def __call__(
@@ -115,7 +125,7 @@ class MonoNormPipeline(DiffusionPipeline):
         batch_size: int = 0,
         show_progress_bar: bool = True,
         ensemble_kwargs: Dict = None,
-    ) -> MonoIntrinOutput:
+    ) -> Dict:
         """
         Function invoked when calling the pipeline.
 
@@ -201,9 +211,12 @@ class MonoNormPipeline(DiffusionPipeline):
         assets_pred_ls = {k: torch.cat(v, dim=0).squeeze() for k, v in assets_pred_ls.items()}
         torch.cuda.empty_cache()  # clear vram cache for ensembling
 
-        # ----------------- Test-time ensembling -----------------
-        mono_output = MonoIntrinOutput()
-        for k, v in assets_pred_ls:
+        # ----------------- Post processing -----------------
+        mono_output = {}
+        for k, v in assets_pred_ls.items():
+            if k == "depth":
+                v = v.mean(axis=1)
+
             if ensemble_size > 1:
                 if k == "depth":
                     v, uncert = self.ensemble_depths(v, **(ensemble_kwargs or {}))
@@ -214,64 +227,33 @@ class MonoNormPipeline(DiffusionPipeline):
             else:
                 uncert = None
 
-        # Resize back to original resolution
-        if match_input_res:
-            rsz = Resize(input_size[::-1], interpolation=InterpolationMode.BICUBIC, antialias=True)
-            v = rsz(v)
-        
-        v = v.permute(1, 2, 0).cpu().numpy().astype(np.float32)
+            # Resize back to original resolution
+            if match_input_res:
+                rsz = Resize(input_size[::-1], interpolation=InterpolationMode.BICUBIC, antialias=True)
+                if v.dim() == 2:
+                    v = rsz(v[None])[0]
+                else:
+                    v = rsz(v)
+            
+            v = v if v.dim() == 2 else v.permute(1, 2, 0)
+            v = v.cpu().numpy().astype(np.float32)
 
-        # Colorize
-        if k == "depth":
-            depth_colored = self.colorize_depth_maps(v, 0, 1).squeeze()
-            depth_colored = (depth_colored * 255).astype(np.uint8)
-            depth_colored_hwc = self.chw2hwc(depth_colored)
-            depth_colored_img = Image.fromarray(depth_colored_hwc)
-            mono_output.depth_np = v
-            mono_output.depth_pil = depth_colored_img
-            mono_output.depth_uncertainty = uncert
-        elif k == "normal":
-            normal_color = np.clip(v + 1 / 2, 0, 1)
-            normal_color = (normal_color * 255).astype(np.uint8)
-            normal_color = Image.fromarray(normal_color)
-            mono_output.normal_np = v
-            mono_output.normal_pil = normal_color
-            mono_output.normal_uncertainty = uncert
-        elif k == "shading":
-            mono_output.shading_np = v
-            mono_output.shading_uncertainty = uncert
-        elif k == "albedo":
-            mono_output.albedo_np = v
-            mono_output.albedo_uncertainty = uncert
-        elif k == "specular":
-            mono_output.specular_np = v
-            mono_output.specular_uncertainty = uncert
+            def tensor2pil(_t):
+                _t = np.clip((_t + 1) / 2, 0, 1)
+                _t = (_t * 255).astype(np.uint8)
+                return Image.fromarray(_t)
+            
+            # Colorize
+            if k == "depth":  # special process to depth
+                depth_colored = self.colorize_depth_maps(v, 0, 1).squeeze()
+                depth_colored = (depth_colored * 255).astype(np.uint8)
+                depth_colored_hwc = self.chw2hwc(depth_colored)
+                depth_colored_img = Image.fromarray(depth_colored_hwc)
+                mono_output["depth"] = (v, depth_colored_img, uncert)
+            else:
+                mono_output[k] = (v, tensor2pil(v), uncert)
 
         return mono_output
-
-    def _prepare_text_embed(self):
-        """
-        Encode text embedding for prompt.
-        """
-        prompts = {
-            "depth": "hyper detailed depth map, 4k",
-            "normal": "hyper detailed surface normal map, 4k",
-            "shading": "hyper detailed diffuse shading map, diffuse illuminance, ambient lighting, 4k",
-            "albedo": "hyper detailed albedo map, diffuse reflectance, flat lighting, no shadows, 4k",
-            "specular": "hyper detailed specular highlights, glossy reflections, shiny, 4k",
-        }
-        
-        for k, p in prompts.items():
-            text_inputs = self.tokenizer(
-                p,
-                padding="do_not_pad",
-                max_length=self.tokenizer.model_max_length,
-                truncation=True,
-                return_tensors="pt",
-            )
-            text_input_ids = text_inputs.input_ids.to(self.text_encoder.device)
-            text_embed = self.text_encoder(text_input_ids)[0].to(self.dtype)
-            self.text_embed_dict[k] = text_embed
 
     @torch.no_grad()
     def single_infer(self, rgb_in: torch.Tensor, text_embed: torch.Tensor, num_inference_steps: int, show_pbar: bool) -> torch.Tensor:
@@ -322,7 +304,6 @@ class MonoNormPipeline(DiffusionPipeline):
             latent = self.scheduler.step(noise_pred, t, latent).prev_sample
         torch.cuda.empty_cache()
         asset = self._decode_vae(latent)
-        asset = torch.clip(asset, -1, 1)
         return asset
 
     def _encode_rgb(self, rgb_in: torch.Tensor) -> torch.Tensor:

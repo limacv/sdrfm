@@ -1,13 +1,15 @@
 from torch.utils.data import Dataset
 from torch.utils.data import BatchSampler, SequentialSampler, RandomSampler
 from .hypersim import HyperSimMono
-from .preprocesses import set_normal_normalize_fn, preprocess_functions
+from .preprocesses import set_normal_normalize_fn, set_depth_normalize_fn, set_hypersim_resolution
 import numpy as np
 
 
-def get_mononormal_hypersim(split):
+def get_mono_hypersim(split, assets):
+    from .preprocesses import preprocess_functions
     return HyperSimMono(
         data_dir_root="/cpfs01/shared/pjlab-lingjun-landmarks/pjlab-lingjun-landmarks_hdd/jianglihan/Hypersim/portable_hard_drive/downloads",
+        assets=assets,
         preprocess=preprocess_functions["hypersim"][split],
         split=split
     )

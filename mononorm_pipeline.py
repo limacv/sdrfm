@@ -212,7 +212,7 @@ class MonoNormPipeline(DiffusionPipeline):
         normal_pred = normal_pred.permute(1, 2, 0).cpu().numpy().astype(np.float32)
 
         # Colorize
-        normal_color = np.clip(normal_pred + 1 / 2, 0, 1)
+        normal_color = np.clip((normal_pred + 1) / 2, 0, 1)
         normal_color = (normal_color * 255).astype(np.uint8)
         normal_color = Image.fromarray(normal_color)
         return MonoNormOutput(

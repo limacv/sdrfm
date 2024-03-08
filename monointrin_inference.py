@@ -1,7 +1,7 @@
 import numpy as np
 import torch
 from PIL import Image
-from mononorm_pipeline import MonoNormPipeline
+from monointrin_pipeline import MonoIntrinPipeline
 from diffusers.utils import load_image
 import cv2
 import os
@@ -9,7 +9,7 @@ from glob import glob
 from tqdm import tqdm
 
 
-pipe = MonoNormPipeline.from_pretrained(
+pipe = MonoIntrinPipeline.from_pretrained(
     # "Bingxin/Marigold",
     "/cpfs01/shared/pjlab-lingjun-landmarks/mali1/outputs/Normv2_norm",
     # torch_dtype=torch.float16,                # (optional) Run with half-precision (16-bit float).

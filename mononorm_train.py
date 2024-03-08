@@ -616,7 +616,7 @@ def main():
     empty_text_embed = text_encoder(text_input_ids)[0].to(text_encoder.dtype)
     
     set_normal_normalize_fn(args.dataset_normal_mode)
-    dataset_hypersim = get_mononormal_hypersim("train")
+    dataset_hypersim = get_mono_hypersim("train")
 
     # train_dataset = MixedDataset(
     #     dataset_list = [dataset_vkitti, dataset_hypersim],

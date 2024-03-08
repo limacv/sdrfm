@@ -9,14 +9,10 @@ from PIL import Image
 from torch.utils.data import DataLoader, Dataset
 from torchvision.transforms import ToTensor, Resize
 
-
-class HyperSim_Asset(Enum):
-    Depth = 1
-    Normal = 2
-    D2Normal = 3
-    Albedo = 4
-    Shading = 5  # Diffuse = shading * albedo
-    Specular = 6
+HyperSim_Asset_List = [
+    "depth", "normal", "d2normal",
+    "albedo", "shading", "specular"
+]
 
 
 _NAN_THRESHOLD = 0.02
@@ -31,7 +27,8 @@ class HyperSimMono(Dataset):
         # depth paths are of the form <data_dir_root>/<scene>/images/scene_cam_#_geometry_hdf5/*.depth_meters.hdf5
         csv_filename = os.path.join(data_dir_root, "normal_stats_v2.csv")
         self.assets = assets
-        assert(os.path.exists(csv_filename))
+        assert all(a in HyperSim_Asset_List for a in self.assets), f"HyperSimMono::Unrecognized asset name {assets}"
+        assert (os.path.exists(csv_filename))
         
         # read the csv file first
         with open(csv_filename, encoding="UTF-8") as file:
@@ -90,21 +87,21 @@ class HyperSimMono(Dataset):
 
         for p in self.image_files:
             assert os.path.isfile(p), f"HyperSim::{p} does not exist"
-        if HyperSim_Asset.Normal in self.assets:
-            for p in self.normal_files:
-                assert os.path.isfile(p), f"HyperSim::{p} does not exist"
-        if HyperSim_Asset.Depth or HyperSim_Asset.D2Normal in self.assets:
-            for p in self.depth_files:
-                assert os.path.isfile(p), f"HyperSim::{p} does not exist"
-        if HyperSim_Asset.Albedo in self.assets:
-            for p in self.albedo_files:
-                assert os.path.isfile(p), f"HyperSim::{p} does not exist"
-        if HyperSim_Asset.Shading in self.assets:
-            for p in self.shading_files:
-                assert os.path.isfile(p), f"HyperSim::{p} does not exist"
-        if HyperSim_Asset.Specular in self.assets:
-            for p in self.specular_files:
-                assert os.path.isfile(p), f"HyperSim::{p} does not exist"
+        # if "normal" in self.assets:
+        #     for p in self.normal_files:
+        #         assert os.path.isfile(p), f"HyperSim::{p} does not exist"
+        # if "depth" or "d2normal" in self.assets:
+        #     for p in self.depth_files:
+        #         assert os.path.isfile(p), f"HyperSim::{p} does not exist"
+        # if "albedo" in self.assets:
+        #     for p in self.albedo_files:
+        #         assert os.path.isfile(p), f"HyperSim::{p} does not exist"
+        # if "shading" in self.assets:
+        #     for p in self.shading_files:
+        #         assert os.path.isfile(p), f"HyperSim::{p} does not exist"
+        # if "specular" in self.assets:
+        #     for p in self.specular_files:
+        #         assert os.path.isfile(p), f"HyperSim::{p} does not exist"
         
         self.preprocess = preprocess if preprocess is not None else lambda x: x
         
@@ -116,8 +113,8 @@ class HyperSimMono(Dataset):
 
         depth = None
 
-        sample = dict(image=image, dataset="hypersim_mono")
-        if HyperSim_Asset.Depth in self.assets or HyperSim_Asset.D2Normal in self.assets:
+        sample = dict(image=image)
+        if "depth" in self.assets or "d2normal" in self.assets:
             depth_path = self.depth_files[idx]
             depth_fd = h5py.File(depth_path, "r")
             # in meters (Euclidean distance)
@@ -125,15 +122,14 @@ class HyperSimMono(Dataset):
             depth = _hypersim_distance_to_depth(distance_meters)  # in meters (planar depth)
             depth_max = depth[np.logical_not(np.isnan(depth))].max()
             depth = np.nan_to_num(depth, nan=depth_max, neginf=depth_max, posinf=depth_max)
-            depth = torch.tensor(depth)[None]
-            sample["depth"] = depth
+            sample["depth"] = torch.tensor(depth)[None]
 
-        if HyperSim_Asset.D2Normal in self.assets:
+        if "d2normal" in self.assets:
             normal = _hypersim_depth_to_normal(depth)
             normal = torch.tensor(normal).permute(2, 0, 1)
             sample["normal"] = normal
 
-        if HyperSim_Asset.Normal in self.assets:
+        if "normal" in self.assets:
             normal_path = self.normal_files[idx]
             normal = h5py.File(normal_path, "r")
             # in meters (Euclidean distance)
@@ -143,21 +139,21 @@ class HyperSimMono(Dataset):
             normal = torch.tensor(normal).permute(2, 0, 1)
             sample["normal"] = normal
 
-        if HyperSim_Asset.Albedo in self.assets:
+        if "albedo" in self.assets:
             albedo_path = self.albedo_files[idx]
             albedo = Image.open(albedo_path)
             albedo = ToTensor()(albedo)
             albedo = albedo * 2 - 1
             sample["albedo"] = albedo
         
-        if HyperSim_Asset.Shading in self.assets:
+        if "shading" in self.assets:
             shading_path = self.shading_files[idx]
             shading = Image.open(shading_path)
             shading = ToTensor()(shading)
             shading = shading * 2 - 1
             sample["shading"] = shading
         
-        if HyperSim_Asset.Specular in self.assets:
+        if "specular" in self.assets:
             specular_path = self.specular_files[idx]
             specular = Image.open(specular_path)
             specular = ToTensor()(specular)
@@ -194,13 +190,15 @@ def _hypersim_depth_to_normal(depth):
     npyImageplaneZ = np.full([intHeight, intWidth, 1], fltFocal, np.float32)
     npyImageplane = np.concatenate(
         [npyImageplaneX, npyImageplaneY, npyImageplaneZ], 2)
-    xyz = npyImageplane * depth
-    dy = xyz[1:, :-1] - xyz[:-1, :-1]
-    dy = dy / (np.linalg.norm(dy, axis=-1, keepdim=True) + 1e-9)
+    xyz = npyImageplane * depth[..., None]
+    dy = - xyz[1:, :-1] + xyz[:-1, :-1]
+    dy = dy / (np.linalg.norm(dy, axis=-1, keepdims=True) + 1e-9)
     dx = xyz[:-1, 1:] - xyz[:-1, :-1]
-    dx = dx / (np.linalg.norm(dx, axis=-1, keepdim=True) + 1e-9)
-    dz = np.cross(dx, dy)
-    return dz / (np.linalg.norm(dz, axis=-1, keepdim=True) + 1e-9)
+    dx = dx / (np.linalg.norm(dx, axis=-1, keepdims=True) + 1e-9)
+    dz = np.cross(dx, dy, axis=-1)
+    dz = np.concatenate([dz, dz[-1:]], axis=0)
+    dz = np.concatenate([dz, dz[:, -1:]], axis=1)
+    return dz / (np.linalg.norm(dz, axis=-1, keepdims=True) + 1e-9)
 
 
 def get_hypersim_loader(data_dir_root, batch_size=1, **kwargs):
