@@ -11,10 +11,12 @@ from torchvision.transforms import ToTensor, Resize
 
 HyperSim_Asset_List = [
     "depth", "normal", "d2normal",
-    "albedo", "shading", "specular"
+    "albedo", "shading", "specular",
+    "diffuse"
 ]
 
 
+_COLOR_PREFIX = "color"  # "tonemap"
 _NAN_THRESHOLD = 0.02
 _ERR2_THRESHOLD = 0.1
 _STD_THRESHOLD = 0.1
@@ -70,7 +72,7 @@ class HyperSimMono(Dataset):
         self.specular_files = []
         for scene, cam, frm in zip(scene_names, camera_names, frame_ids):
             self.image_files.append(os.path.join(
-                data_dir_root, scene, "images", f"scene_{cam}_final_preview", f"frame.{int(frm):04d}.tonemap.jpg"
+                data_dir_root, scene, "images", f"scene_{cam}_final_preview", f"frame.{int(frm):04d}.{_COLOR_PREFIX}.jpg"
             ))
             self.depth_files.append(os.path.join(
                 data_dir_root, scene, "images", f"scene_{cam}_geometry_hdf5", f"frame.{int(frm):04d}.depth_meters.hdf5"
@@ -162,6 +164,14 @@ class HyperSimMono(Dataset):
             specular = ToTensor()(specular)
             specular = specular * 2 - 1
             sample["specular"] = specular
+        
+        if "diffuse" in self.assets:
+            assert _COLOR_PREFIX == "color"
+            residual_p = image_path.replace("color.jpg", "residual.jpg")
+            residual = Image.open(residual_p)
+            residual = ToTensor()(residual)
+            residual = ((image + 1) / 2 - residual).clamp_min(0)
+            sample["diffuse"] = residual * 2 - 1
         
         return self.preprocess(sample)
 

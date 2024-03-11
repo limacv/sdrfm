@@ -228,7 +228,7 @@ def parse_args():
         "--dataset_assets",
         type=str,
         default="depth",
-        help="depth, normal, d2normal, albedo, shading, specular, split by ','"
+        help="depth, normal, d2normal, albedo, shading, specular, diffuse, split by ','"
     )
     parser.add_argument("--val_denoising_steps", type=int, default=20, help="The number of denosing step for validation.")
     parser.add_argument("--val_ensemble_size", type=int, default=10, help="The number of ensemble for validation.")
@@ -877,11 +877,11 @@ def main():
                     # end of loss computation for each asset
 
                 # Gather the losses across all processes for logging (if we use distributed training).
-                avg_loss = accelerator.gather(loss.repeat(args.train_batch_size)).mean()
+                avg_loss = accelerator.gather(total_loss.repeat(args.train_batch_size)).mean()
                 train_loss += avg_loss.item() / args.gradient_accumulation_steps
 
                 # Backpropagate
-                accelerator.backward(loss)
+                accelerator.backward(total_loss)
                 if accelerator.sync_gradients:
                     accelerator.clip_grad_norm_(unet.parameters(), args.max_grad_norm)
                 optimizer.step()
@@ -923,7 +923,7 @@ def main():
                         accelerator.save_state(save_path)
                         logger.info(f"Saved state to {save_path}")
 
-            logs = {"step_loss": loss.detach().item(), "lr": lr_scheduler.get_last_lr()[0]}
+            logs = {"step_loss": total_loss.detach().item(), "lr": lr_scheduler.get_last_lr()[0]}
             progress_bar.set_postfix(**logs)
 
             if global_step >= args.max_train_steps:

@@ -52,6 +52,7 @@ def prepare_text_embed(tokenizer, text_encoder) -> Dict[str, torch.Tensor]:
         "depth": "detailed depth map, 4k",
         "normal": "detailed surface normal map, 4k",
         "shading": "detailed diffuse shading map, diffuse illuminance, ambient lighting, 4k",
+        "diffuse": "diffuse color, no shadows, 4k",
         "albedo": "albedo map, diffuse reflectance, flat lighting, no shadows, 4k",
         "specular": "specular highlights, glossy reflections, shiny, 4k",
     }

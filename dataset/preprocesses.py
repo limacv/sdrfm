@@ -154,6 +154,12 @@ def hypersim_train_preprocess(sample: dict):
             specular = torch.flip(specular, dims=[-1])
         sample["specular"] = specular.contiguous()
 
+    diffuse = sample.get("diffuse", None)
+    if diffuse is not None:
+        diffuse = resize(diffuse)
+        if do_flip:
+            diffuse = torch.flip(diffuse, dims=[-1])
+        sample["diffuse"] = diffuse.contiguous()
     return sample
 
 
