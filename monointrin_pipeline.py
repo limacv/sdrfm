@@ -152,6 +152,10 @@ class MonoIntrinPipeline(DiffusionPipeline):
                 Colormap used to colorize the depth map.
             ensemble_kwargs (`dict`, *optional*, defaults to `None`):
                 Arguments for detailed ensembling settings.
+        
+        Returns:
+            Dict of asset_key, (output, output_PIL, output_uncertainty)
+            if ensemble_size == 1, then output_uncertainty = None
         """
 
         device = self.device

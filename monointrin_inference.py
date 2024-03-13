@@ -11,7 +11,7 @@ from tqdm import tqdm
 
 pipe = MonoIntrinPipeline.from_pretrained(
     # "Bingxin/Marigold",
-    "/cpfs01/shared/pjlab-lingjun-landmarks/mali1/outputs/IntrinDeNo",
+    "/cpfs01/shared/pjlab-lingjun-landmarks/mali1/outputs/Intrin480DeNo",
     # torch_dtype=torch.float16,                # (optional) Run with half-precision (16-bit float).
 )
 
@@ -19,7 +19,7 @@ pipe.to("cuda")
 
 # data load
 input_rgb_dir = 'examples'
-output_dir = 'outputs/IntrinDeNo'
+output_dir = 'outputs/Intrin480DeNo'
 os.makedirs(output_dir,exist_ok=True)
 EXTENSION_LIST=[".jpg", ".jpeg", ".png"]
 rgb_filename_list = glob(os.path.join(input_rgb_dir, "*"))
@@ -40,22 +40,16 @@ for rgb_path in tqdm(rgb_filename_list, desc="Estimating", leave=True):
         processing_res=768,     # (optional) Maximum resolution of processing. If set to 0: will not resize at all. Defaults to 768.
         match_input_res=True,   # (optional) Resize depth prediction to match input resolution.
         batch_size=0,           # (optional) Inference batch size, no bigger than `num_ensemble`. If set to 0, the script will automatically decide the proper batch size. Defaults to 0.
-        color_map="Spectral",   # (optional) Colormap used to colorize the depth map. Defaults to "Spectral".
         show_progress_bar=True, # (optional) If true, will show progress bars of the inference progress.
     )
     
-    uncertainty: torch.Tensor = pipeline_output.uncertainty                    # Predicted uncertainty map
-    normal: np.ndarray = pipeline_output.normal_np                    # Predicted depth map
-    normal_colored: Image.Image = pipeline_output.normal_pil      # Colorized prediction
+    name_base = os.path.splitext(os.path.basename(rgb_path))[0]
+    pred_name_base = name_base + "_pred"
+    os.makedirs(output_dir, exist_ok=True)
+    for asset_k, (asset, asset_pil, asset_uncert) in pipeline_output.items():
+        asset_pil.save(os.path.join(output_dir, f"{pred_name_base}_{asset_k}.png"))
 
-    rgb_name_base = os.path.splitext(os.path.basename(rgb_path))[0]
-    pred_name_base = rgb_name_base + "_pred"
-
-    # Save colorized depth map
-    normal_colored.save(os.path.join(output_dir, f"{pred_name_base}_normal.png"))
-
-    if uncertainty is not None:
-        uncertainty = (uncertainty * 255).clamp(0, 255).detach().cpu().numpy().astype(np.uint8)
-        uncertainty = cv2.applyColorMap(uncertainty, cv2.COLORMAP_VIRIDIS)
-        cv2.imwrite(os.path.join(output_dir, f"{pred_name_base}_uncerty.png"), uncertainty)
-
+        if asset_uncert is not None:
+            asset_uncert = (asset_uncert * 5 * 255).clamp(0, 255).detach().cpu().numpy().astype(np.uint8)
+            asset_uncert = cv2.applyColorMap(asset_uncert, cv2.COLORMAP_VIRIDIS)
+            cv2.imwrite(os.path.join(output_dir, f"{pred_name_base}_{asset_k}_uncert.png"), asset_uncert)
