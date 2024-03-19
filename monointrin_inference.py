@@ -9,17 +9,17 @@ from glob import glob
 from tqdm import tqdm
 
 
-pipe = MonoIntrinPipeline.from_pretrained(
-    # "Bingxin/Marigold",
-    "/cpfs01/shared/pjlab-lingjun-landmarks/mali1/outputs/Intrin480DeNo",
-    # torch_dtype=torch.float16,                # (optional) Run with half-precision (16-bit float).
-)
+# params
+pretrained_path = "/cpfs01/shared/pjlab-lingjun-landmarks/mali1/outputs/IntrinNo"
+input_rgb_dir = 'examples'
+output_dir = 'outputs/IntrinNo'
+assets_list = ["normal"]
+ensemble_size = 3
 
+
+pipe = MonoIntrinPipeline.from_pretrained(pretrained_path)
 pipe.to("cuda")
 
-# data load
-input_rgb_dir = 'examples'
-output_dir = 'outputs/Intrin480DeNo'
 os.makedirs(output_dir,exist_ok=True)
 EXTENSION_LIST=[".jpg", ".jpeg", ".png"]
 rgb_filename_list = glob(os.path.join(input_rgb_dir, "*"))
@@ -34,9 +34,9 @@ for rgb_path in tqdm(rgb_filename_list, desc="Estimating", leave=True):
 
     pipeline_output = pipe(
         image,                  # Input image.
-        ["depth", "normal"],
+        assets_list,
         denoising_steps=20,     # (optional) Number of denoising steps of each inference pass. Default: 10.
-        ensemble_size=10,       # (optional) Number of inference passes in the ensemble. Default: 10.
+        ensemble_size=ensemble_size,       # (optional) Number of inference passes in the ensemble. Default: 10.
         processing_res=768,     # (optional) Maximum resolution of processing. If set to 0: will not resize at all. Defaults to 768.
         match_input_res=True,   # (optional) Resize depth prediction to match input resolution.
         batch_size=0,           # (optional) Inference batch size, no bigger than `num_ensemble`. If set to 0, the script will automatically decide the proper batch size. Defaults to 0.
